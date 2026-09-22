@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="theme-color" content="#f6f2ea" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' file: archive: data: blob: 'unsafe-inline'; img-src 'self' file: archive: data: blob:; media-src 'self' file: archive: data: blob:;"
+    />
+    <title>My Life</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <!-- ============ 左：分类 ============ -->
+      <aside class="sidebar" id="sidebar">
+        <button class="rail-btn" id="sideExpand" title="展开分类栏（⌘1）">»</button>
+
+        <div class="brand drag-region">
+          <div class="brand-mark">M</div>
+          <div class="brand-text">
+            <h1>My Life</h1>
+            <p>经历 · 资料 · 笔记 · 灵感</p>
+          </div>
+          <button class="pane-toggle" id="sideCollapse" title="收起分类栏（⌘1）">«</button>
+        </div>
+
+        <div class="sidebar-inner">
+          <button class="btn-primary" id="btnNew">＋ 新建资料</button>
+
+          <nav class="nav" id="navMain"></nav>
+
+          <section class="side-section">
+            <header>
+              <span>分类</span>
+              <button id="btnAddCategory" title="新建分类">＋</button>
+            </header>
+            <div id="categoryList"></div>
+          </section>
+
+          <section class="side-section">
+            <header><span>标签</span></header>
+            <div class="tag-cloud" id="tagCloud"></div>
+          </section>
+        </div>
+
+        <footer class="sidebar-foot">
+          <div class="lib-path" id="libPath" title="点击打开资料库目录">…</div>
+          <div class="foot-actions">
+            <button id="btnOpenLib">打开目录</button>
+            <button id="btnChangeLib">更换位置</button>
+            <button id="btnBackup">立即备份</button>
+            <button id="btnRestore">从备份恢复</button>
+            <button id="btnSettings" class="span2">⚙ 设置与配色</button>
+          </div>
+        </footer>
+      </aside>
+
+      <!-- ============ 中：列表 ============ -->
+      <main class="list-pane" id="listPane">
+        <button class="rail-btn" id="listExpand" title="展开列表栏（⌘2）">»</button>
+
+        <div class="list-head drag-region">
+          <div class="search-wrap" id="searchWrap">
+            <span class="search-ico">⌕</span>
+            <input id="searchInput" type="text" placeholder="搜索标题、正文、来源、标签…" autocomplete="off" spellcheck="false" />
+            <button class="search-clear" id="searchClear" title="清空">✕</button>
+            <kbd>⌘F</kbd>
+          </div>
+          <div class="filter-row">
+            <select id="filterType" title="按类型筛选"></select>
+            <select id="filterTag" title="按标签筛选"></select>
+            <select id="filterDate" title="按时间筛选"></select>
+            <select id="sortBy" title="排序方式"></select>
+          </div>
+          <div class="list-meta">
+            <label class="check-all"><input type="checkbox" id="checkAll" /> <span>全选</span></label>
+            <span id="listCount">0 条</span>
+            <span class="spacer"></span>
+            <button class="link-btn hidden" id="btnClearFilters">清除筛选</button>
+            <button class="pane-toggle flat" id="listCollapse" title="收起列表栏（⌘2）">«</button>
+          </div>
+          <div class="bulk-bar hidden" id="bulkBar">
+            <span id="bulkCount">已选 0 条</span>
+            <span class="spacer"></span>
+            <button id="btnExport">导出 Markdown</button>
+            <button id="btnBulkTrash">移到回收站</button>
+            <button class="hidden" id="btnBulkRestore">还原</button>
+            <button class="danger hidden" id="btnBulkDelete">彻底删除</button>
+          </div>
+        </div>
+        <div class="list-scroll" id="listScroll"></div>
+      </main>
+
+      <!-- ============ 右：详情 / 编辑 ============ -->
+      <section class="detail-pane" id="detailPane">
+        <div class="detail-bar drag-region" id="detailBar"></div>
+        <div class="detail-scroll" id="detailScroll"></div>
+      </section>
+    </div>
+
+    <div id="modalRoot"></div>
+    <div id="toastRoot"></div>
+
+    <script src="themes.js"></script>
+    <script src="markdown.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
