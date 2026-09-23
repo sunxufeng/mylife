@@ -10,6 +10,7 @@ const path = require('node:path');
 const JSZip = require('jszip');
 
 const { ARCHIVE_FILE, ATTACH_DIR, BACKUP_DIR } = require('./store');
+const { fmtTime, fmtSlashDate, repeatDesc, buildIcs, todayStr, addDays } = require('../renderer/schedule');
 
 const TYPE_LABEL = { text: '文字', link: '链接', image: '图片', file: '文件' };
 
@@ -61,8 +62,23 @@ async function walk(dir, root = dir, exclude = []) {
   return out;
 }
 
+/** 一行日程摘要，导出 Markdown 时挂在对应资料下面 */
+function scheduleMarkdownLine(s) {
+  const bits = [`- \`${s.date}\` ${fmtTime(s)}　${s.title || '未命名日程'}`];
+  if (s.location) bits.push(`@ ${s.location}`);
+  const extra = [];
+  if (s.done) extra.push('已完成');
+  const rep = repeatDesc(s.repeat);
+  if (rep) extra.push(rep);
+  if (extra.length) bits.push(`（${extra.join('，')}）`);
+  return bits.join(' ');
+}
+
 /** 用 Markdown 组装若干条资料 */
-function buildMarkdown(entries, { title = 'My Life 导出', includeAttachmentList = true } = {}) {
+function buildMarkdown(
+  entries,
+  { title = 'My Life 导出', includeAttachmentList = true, schedules = [], includeSchedules = false } = {}
+) {
   const now = new Date();
   const p = (n) => String(n).padStart(2, '0');
   const lines = [];
@@ -98,6 +114,18 @@ function buildMarkdown(entries, { title = 'My Life 导出', includeAttachmentLis
         lines.push(`- [${a.name}](${a.relPath})　（${humanSize(a.size)}）`);
       }
       lines.push('');
+    }
+    if (includeSchedules) {
+      const related = (schedules || []).filter((s) => !s.deleted && (s.links || []).includes(e.id));
+      if (related.length) {
+        const sorted = related
+          .slice()
+          .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+        lines.push(`### 相关日程 · ${sorted.length}`);
+        lines.push('');
+        for (const s of sorted) lines.push(scheduleMarkdownLine(s));
+        lines.push('');
+      }
     }
     lines.push('---');
   });
@@ -177,6 +205,12 @@ class LibraryService {
     sidebarCollapsed: false,
     listCollapsed: false,
     mdPreview: true,
+    /** 日程提醒是否同时走 macOS 通知中心 */
+    notify: true,
+    /** 日历视图：月视图 / 议程 */
+    calView: 'month',
+    /** 议程视图看多少天 */
+    calRange: 30,
   };
 
   getPrefs() {
@@ -202,10 +236,11 @@ class LibraryService {
       JSON.stringify(
         {
           app: 'My Life',
-          version: 1,
+          version: 2,
           exportedAt: new Date().toISOString(),
           libraryPath: store.libraryPath,
           entries: store.data.entries.length,
+          schedules: (store.data.schedules || []).length,
         },
         null,
         2
@@ -287,6 +322,7 @@ class LibraryService {
     await store.load();
     return {
       entries: store.data.entries.length,
+      schedules: (store.data.schedules || []).length,
       attachments: restored,
       files,
       safetyDir,
@@ -296,8 +332,8 @@ class LibraryService {
   // ---------- Markdown 导出 ----------
 
   /** 导出为单个合并的 .md 文件，可选把附件也复制到 md 同级目录 */
-  async exportCombined(entries, mdPath, store, { copyAttachments = false } = {}) {
-    const md = buildMarkdown(entries);
+  async exportCombined(entries, mdPath, store, { copyAttachments = false, includeSchedules = false, schedules = [] } = {}) {
+    const md = buildMarkdown(entries, { includeSchedules, schedules });
     await fsp.mkdir(path.dirname(mdPath), { recursive: true });
     await fsp.writeFile(mdPath, md, 'utf8');
     let copied = 0;
@@ -319,7 +355,7 @@ class LibraryService {
   }
 
   /** 每条资料单独一个 .md 文件，输出到指定目录 */
-  async exportPerEntry(entries, dir, store, { copyAttachments = true } = {}) {
+  async exportPerEntry(entries, dir, store, { copyAttachments = true, includeSchedules = false, schedules = [] } = {}) {
     await fsp.mkdir(dir, { recursive: true });
     let copied = 0;
     const used = new Set();
@@ -329,7 +365,11 @@ class LibraryService {
       let n = 1;
       while (used.has(name)) name = `${e.date || ''}_${base}_${++n}.md`.replace(/^_/, '');
       used.add(name);
-      const md = buildMarkdown([e], { title: e.title || '未命名资料' });
+      const md = buildMarkdown([e], {
+        title: e.title || '未命名资料',
+        includeSchedules,
+        schedules,
+      });
       await fsp.writeFile(path.join(dir, name), md, 'utf8');
       if (copyAttachments) {
         for (const a of e.attachments || []) {
@@ -343,6 +383,43 @@ class LibraryService {
       }
     }
     return { path: dir, entries: entries.length, copied };
+  }
+
+  // ---------- .ics 导出 ----------
+
+  /**
+   * 导出标准 iCalendar 文件。
+   * range：'month'（当前月）/ 'next30'（今天起 30 天）/ 'all'（全部，前后各留一年）
+   */
+  async exportIcs(schedules, icsPath, { range = 'month', anchor } = {}) {
+    const list = (schedules || []).filter((s) => !s.deleted);
+    if (!list.length) throw new Error('还没有日程可以导出');
+    const today = todayStr();
+    const base = /^\d{4}-\d{2}-\d{2}$/.test(anchor || '') ? anchor : today;
+    let from = today;
+    let to = addDays(today, 365);
+    if (range === 'month') {
+      const d = new Date(base + 'T00:00:00');
+      const first = new Date(d.getFullYear(), d.getMonth(), 1);
+      const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      const p = (n) => String(n).padStart(2, '0');
+      from = `${first.getFullYear()}-${p(first.getMonth() + 1)}-01`;
+      to = `${last.getFullYear()}-${p(last.getMonth() + 1)}-${p(last.getDate())}`;
+    } else if (range === 'next30') {
+      from = today;
+      to = addDays(today, 30);
+    } else {
+      // 全部：以数据里最早 / 最晚的日期为界，各留一年余量
+      const dates = list.map((s) => s.date).filter(Boolean).sort();
+      from = dates.length ? addDays(dates[0], -365) : addDays(today, -365);
+      const tails = list.map((s) => s.endDate || s.date).filter(Boolean).sort();
+      to = tails.length ? addDays(tails[tails.length - 1], 365) : addDays(today, 365);
+    }
+    const text = buildIcs(list, { from, to });
+    await fsp.mkdir(path.dirname(icsPath), { recursive: true });
+    await fsp.writeFile(icsPath, text, 'utf8');
+    const events = (text.match(/BEGIN:VEVENT/g) || []).length;
+    return { path: icsPath, bytes: Buffer.byteLength(text, 'utf8'), events, from, to, schedules: list.length };
   }
 }
 

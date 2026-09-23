@@ -20,10 +20,20 @@ const {
   net,
   clipboard,
   nativeImage,
+  Notification,
 } = require('electron');
 
 const { ArchiveStore, uid } = require('./store');
 const { LibraryService, defaultLibraryPath } = require('./library');
+const {
+  occurrencesOn,
+  occurrencesInRange,
+  remindAt,
+  fmtTime,
+  todayStr,
+  addDays,
+  parseDate,
+} = require('../renderer/schedule');
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -60,9 +70,11 @@ function snapshot() {
     ok: true,
     libraryPath: store.libraryPath,
     entries: store.data.entries,
+    schedules: store.data.schedules || [],
     stats: store.stats(),
     prefs: lib.getPrefs(),
     migratedFrom,
+    today: todayStr(),
     appInfo: {
       version: app.getVersion(),
       name: app.getName(),
@@ -145,11 +157,14 @@ function buildMenu() {
       label: '文件',
       submenu: [
         { label: '新建资料', accelerator: 'CmdOrCtrl+N', click: send('menu:new') },
+        { label: '新建日程', accelerator: 'CmdOrCtrl+Shift+N', click: send('menu:new-schedule') },
         { label: '保存当前编辑', accelerator: 'CmdOrCtrl+S', click: send('menu:save') },
         { type: 'separator' },
         { label: '立即备份到资料库', accelerator: 'CmdOrCtrl+B', click: send('menu:backup') },
         { label: '备份到其他位置…', click: send('menu:backup-as') },
         { label: '从备份恢复…', click: send('menu:restore') },
+        { type: 'separator' },
+        { label: '导出日程（.ics）…', click: send('menu:export-ics') },
         { type: 'separator' },
         { label: '打开资料库目录', accelerator: 'CmdOrCtrl+Shift+O', click: () => shell.openPath(store.libraryPath) },
         { type: 'separator' },
@@ -180,6 +195,9 @@ function buildMenu() {
         { role: 'zoomIn', label: '放大' },
         { role: 'zoomOut', label: '缩小' },
         { type: 'separator' },
+        { label: '日历', accelerator: 'CmdOrCtrl+3', click: send('menu:calendar') },
+        { label: '全部资料', accelerator: 'CmdOrCtrl+4', click: send('menu:all') },
+        { type: 'separator' },
         { label: '收起 / 展开分类栏', accelerator: 'CmdOrCtrl+1', click: send('menu:toggle-side') },
         { label: '收起 / 展开列表栏', accelerator: 'CmdOrCtrl+2', click: send('menu:toggle-list') },
         { type: 'separator' },
@@ -202,7 +220,7 @@ function buildMenu() {
               message: '你的资料全部保存在本机，不联网。',
               detail:
                 `资料库目录：\n${store.libraryPath}\n\n` +
-                `· archive.json —— 全部文字资料\n` +
+                `· archive.json —— 全部文字资料与日程\n` +
                 `· attachments/ —— 附件副本\n` +
                 `· backups/ —— 备份与恢复保险副本\n\n` +
                 `配置与偏好：\n${app.getPath('userData')}`,
@@ -320,6 +338,59 @@ function registerIpc() {
     return { categories, stats: store.stats(), ...snapshotEntries() };
   });
 
+  // ---- 日程 CRUD ----
+  handle('schedule:create', async (payload) => {
+    const schedule = await store.createSchedule(payload || {});
+    return { schedule, stats: store.stats(), ...snapshotEntries() };
+  });
+  handle('schedule:update', async (id, patch) => {
+    const schedule = await store.updateSchedule(id, patch || {});
+    return { schedule, stats: store.stats(), ...snapshotEntries() };
+  });
+  handle('schedule:trash', async (ids) => {
+    const count = await store.trashSchedules(ids);
+    return { count, stats: store.stats(), ...snapshotEntries() };
+  });
+  handle('schedule:restore', async (ids) => {
+    const count = await store.restoreSchedules(ids);
+    return { count, stats: store.stats(), ...snapshotEntries() };
+  });
+  handle('schedule:delete-forever', async (ids) => {
+    const count = await store.removeSchedulesForever(ids);
+    return { count, stats: store.stats(), ...snapshotEntries() };
+  });
+
+  /**
+   * 「只改这一次」：把重复日程的某一次拆成独立日程，
+   * 并在原日程的 repeat.skip 里把那天排除掉，避免出现两次。
+   */
+  handle('schedule:split', async (id, dateStr) => {
+    const src = store.getSchedule(id);
+    if (!src) throw new Error('日程不存在：' + id);
+    const { splitPayload, repeatWithout } = require('../renderer/schedule');
+    const created = await store.createSchedule(splitPayload(src, dateStr));
+    await store.updateSchedule(id, { repeat: repeatWithout(src.repeat, dateStr) });
+    return { schedule: created, stats: store.stats(), ...snapshotEntries() };
+  });
+
+  handle('schedule:export-ics', async (options = {}) => {
+    const range = ['month', 'next30', 'all'].includes(options.range) ? options.range : 'month';
+    const label = { month: '当前月', next30: '未来 30 天', all: '全部' }[range];
+    const tag = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const res = await dialog.showSaveDialog(win, {
+      title: `导出日程（${label}）`,
+      defaultPath: path.join(app.getPath('documents'), `My Life 日程_${tag}.ics`),
+      filters: [{ name: 'iCalendar', extensions: ['ics'] }],
+      buttonLabel: '导出',
+    });
+    if (res.canceled || !res.filePath) return { canceled: true };
+    const out = await lib.exportIcs(store.data.schedules || [], res.filePath, {
+      range,
+      anchor: options.anchor,
+    });
+    return { ...out, range };
+  });
+
   // ---- 附件 ----
   handle('attachment:add-paths', async (entryId, paths) => {
     const added = [];
@@ -408,6 +479,8 @@ function registerIpc() {
     if (!entries.length) throw new Error('请先勾选要导出的资料');
     const mode = options.mode === 'perEntry' ? 'perEntry' : 'combined';
     const copyAttachments = !!options.copyAttachments;
+    const includeSchedules = !!options.includeSchedules;
+    const schedules = includeSchedules ? store.data.schedules || [] : [];
     const tag = new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
     if (mode === 'combined') {
@@ -418,7 +491,11 @@ function registerIpc() {
         buttonLabel: '导出',
       });
       if (res.canceled || !res.filePath) return { canceled: true };
-      const out = await lib.exportCombined(entries, res.filePath, store, { copyAttachments });
+      const out = await lib.exportCombined(entries, res.filePath, store, {
+        copyAttachments,
+        includeSchedules,
+        schedules,
+      });
       return { ...out, mode };
     }
 
@@ -430,15 +507,24 @@ function registerIpc() {
     });
     if (res.canceled || !res.filePaths.length) return { canceled: true };
     const dir = path.join(res.filePaths[0], `My Life 导出_${tag}`);
-    const out = await lib.exportPerEntry(entries, dir, store, { copyAttachments });
+    const out = await lib.exportPerEntry(entries, dir, store, {
+      copyAttachments,
+      includeSchedules,
+      schedules,
+    });
     return { ...out, mode };
   });
 
   /** 预览：把选中资料的 Markdown 文本返回，供界面里"预览"用 */
-  handle('export:preview', async (ids) => {
+  handle('export:preview', async (ids, options = {}) => {
     const { buildMarkdown } = require('./library');
     const entries = (ids || []).map((id) => store.get(id)).filter(Boolean);
-    return { markdown: buildMarkdown(entries) };
+    return {
+      markdown: buildMarkdown(entries, {
+        includeSchedules: !!options.includeSchedules,
+        schedules: options.includeSchedules ? store.data.schedules || [] : [],
+      }),
+    };
   });
 
   // ---- 备份 / 恢复 ----
@@ -487,6 +573,7 @@ function registerIpc() {
       files,
       entries: data.entries.length,
       active: data.entries.filter((e) => !e.deleted).length,
+      schedules: (data.schedules || []).length,
       createdAt: data.createdAt,
       categories: data.categories || [],
     };
@@ -500,6 +587,7 @@ function registerIpc() {
       files,
       entries: data.entries.length,
       active: data.entries.filter((e) => !e.deleted).length,
+      schedules: (data.schedules || []).length,
       createdAt: data.createdAt,
       categories: data.categories || [],
     };
@@ -543,7 +631,110 @@ function registerIpc() {
 
 /** 只回传轻量数据，避免每次操作都发全量（附件本体从来不走 IPC） */
 function snapshotEntries() {
-  return { entries: store.data.entries };
+  return { entries: store.data.entries, schedules: store.data.schedules || [] };
+}
+
+// ---------------------------------------------------------------------------
+// 日程提醒
+// 说清楚能做到什么程度：只在应用运行期间检查。应用没开就不会提醒，
+// 这是本地离线应用的物理限制，不做后台常驻、不装 LaunchAgent。
+// ---------------------------------------------------------------------------
+
+/** 已经提醒过的 key（scheduleId@日期），只活在这次运行里 */
+const notifiedKeys = new Set();
+
+function collectDue(now) {
+  if (!store) return [];
+  const today = todayStr(now);
+  // 只看今天与明天，覆盖「提前 1 天提醒」的场景
+  const occs = occurrencesInRange(store.data.schedules || [], today, addDays(today, 1));
+  const due = [];
+  for (const o of occs) {
+    if (o.schedule.done) continue;
+    const at = remindAt(o.schedule, o.startDate);
+    if (!at) continue;
+    const key = `${o.key}#${o.schedule.remind}`;
+    if (notifiedKeys.has(key)) continue;
+    const late = (now.getTime() - at.getTime()) / 60000;
+    if (late < 0) continue; // 还没到点
+    if (late > 720) continue; // 睡了太久（比如合盖一夜），不补弹一屏
+    notifiedKeys.add(key);
+    due.push({
+      key: o.key,
+      id: o.schedule.id,
+      title: o.schedule.title,
+      date: o.startDate,
+      time: fmtTime(o.schedule),
+      location: o.schedule.location || '',
+      allDay: !!o.schedule.allDay,
+      remind: o.schedule.remind,
+      late: Math.round(late),
+    });
+  }
+  return due.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+}
+
+function checkReminders() {
+  if (!win || win.isDestroyed()) return;
+  const due = collectDue(new Date());
+  if (!due.length) return;
+  win.webContents.send('reminder:fire', { items: due });
+  if (lib.getPrefs().notify && Notification.isSupported()) {
+    for (const item of due.slice(0, 3)) {
+      const n = new Notification({
+        title: item.title,
+        body: `${item.date} ${item.time}${item.location ? '　·　' + item.location : ''}`,
+        silent: false,
+      });
+      n.on('click', () => {
+        if (!win || win.isDestroyed()) return;
+        win.show();
+        win.webContents.send('reminder:focus', { id: item.id, date: item.date });
+      });
+      n.show();
+    }
+  }
+}
+
+/** 刚打开应用时，把今天还没提醒过的日程汇总提示一次（不占用正式提醒名额） */
+function sendTodaySummary() {
+  if (!win || win.isDestroyed() || !store) return;
+  const now = new Date();
+  const today = todayStr(now);
+  const occs = occurrencesInRange(store.data.schedules || [], today, today);
+  const items = [];
+  const seen = new Set();
+  for (const o of occs) {
+    if (o.schedule.done) continue;
+    if (o.schedule.remind == null) continue;
+    if (seen.has(o.key)) continue;
+    const at = remindAt(o.schedule, o.startDate);
+    if (!at) continue;
+    // 只提示「还没过太久」的（结束时间之后 2 小时内还值得看一眼）
+    if (now.getTime() - at.getTime() < -24 * 3600 * 1000) continue;
+    seen.add(o.key);
+    items.push({
+      key: o.key,
+      id: o.schedule.id,
+      title: o.schedule.title,
+      date: o.startDate,
+      time: fmtTime(o.schedule),
+      location: o.schedule.location || '',
+      allDay: !!o.schedule.allDay,
+      remind: o.schedule.remind,
+    });
+  }
+  if (!items.length) return;
+  win.webContents.send('reminder:summary', { items });
+}
+
+let reminderTimer = null;
+
+function startReminderLoop() {
+  if (reminderTimer) clearInterval(reminderTimer);
+  reminderTimer = setInterval(checkReminders, 30000);
+  setTimeout(checkReminders, 2500);
+  setTimeout(sendTodaySummary, 3500);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +769,7 @@ app.whenReady().then(async () => {
   buildMenu();
   registerIpc();
   createWindow();
+  startReminderLoop();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -589,6 +781,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  if (reminderTimer) clearInterval(reminderTimer);
   if (store) {
     try {
       fs.writeFileSync(store.archivePath, JSON.stringify(store.data, null, 2), 'utf8');

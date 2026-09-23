@@ -1,15 +1,15 @@
 {
   "name": "my-life",
   "productName": "My Life",
-  "version": "1.1.0",
-  "description": "My Life —— 本地离线的个人资料归档与检索工具",
+  "version": "1.2.0",
+  "description": "My Life —— 本地离线的个人资料归档与检索工具，带日历与日程",
   "main": "src/main/main.js",
   "author": "sunxufeng",
   "license": "MIT",
   "private": true,
   "scripts": {
     "start": "env -u ELECTRON_RUN_AS_NODE electron .",
-    "pack": "electron-packager . \"My Life\" --platform=darwin --arch=arm64 --out=dist --overwrite --app-bundle-id=com.arete.mylife --app-version=1.1.0 --icon=build/icon.icns --prune=true --asar --ignore=\"^/(scripts|dist)(/|$)\" --ignore=\"^/build/icon\\.iconset(/|$)\"",
+    "pack": "bash build/pack.sh",
     "icon": "env -u ELECTRON_RUN_AS_NODE electron build/make-icon.js"
   },
   "dependencies": {

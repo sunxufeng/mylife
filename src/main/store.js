@@ -10,7 +10,14 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const ARCHIVE_VERSION = 1;
+const {
+  isDateStr,
+  hmToMin,
+  normalizeRepeat,
+  SCHEDULE_COLORS,
+} = require('../renderer/schedule');
+
+const ARCHIVE_VERSION = 2;
 const ARCHIVE_FILE = 'archive.json';
 const ATTACH_DIR = 'attachments';
 const BACKUP_DIR = 'backups';
@@ -67,6 +74,7 @@ class ArchiveStore {
       updatedAt: nowIso(),
       categories: [...DEFAULT_CATEGORIES],
       entries: [],
+      schedules: [],
     };
   }
 
@@ -122,7 +130,24 @@ class ArchiveStore {
     out.categories = out.categories.map((c) => String(c).trim()).filter(Boolean);
     if (!Array.isArray(out.entries)) out.entries = [];
     out.entries = out.entries.map((e) => this.normalizeEntry(e)).filter(Boolean);
+    // 老版本 archive.json 没有 schedules 字段 → 归一化成空数组，不报错、不丢数据
+    if (!Array.isArray(out.schedules)) out.schedules = [];
+    out.schedules = out.schedules.map((s) => this.normalizeSchedule(s)).filter(Boolean);
+    for (const s of out.schedules) {
+      if (s.category && !out.categories.includes(s.category)) out.categories.push(s.category);
+    }
+    this.pruneDanglingLinks(out);
     return out;
+  }
+
+  /** 日程里指向已不存在资料的关联 id 清掉，不留悬空引用 */
+  pruneDanglingLinks(data = this.data) {
+    if (!data || !Array.isArray(data.schedules)) return;
+    const alive = new Set((data.entries || []).map((e) => e.id));
+    for (const s of data.schedules) {
+      if (!Array.isArray(s.links) || !s.links.length) continue;
+      s.links = s.links.filter((id) => alive.has(id));
+    }
   }
 
   normalizeEntry(e) {
@@ -162,6 +187,53 @@ class ArchiveStore {
     };
   }
 
+  /**
+   * 日程归一化。跟资料一样，所有字段都要能接受「缺字段 / 类型不对」的输入，
+   * 因为老数据、手改过的 JSON、备份恢复都可能带进来脏值。
+   */
+  normalizeSchedule(s) {
+    if (!s || typeof s !== 'object') return null;
+    const date = isDateStr(s.date) ? s.date : today();
+    const endRaw = isDateStr(s.endDate) ? s.endDate : null;
+    const endDate = endRaw && endRaw > date ? endRaw : null;
+    const allDay = !!s.allDay;
+    const start = !allDay && hmToMin(s.start) != null ? String(s.start) : '';
+    const end = !allDay && hmToMin(s.end) != null ? String(s.end) : '';
+    const remind =
+      s.remind == null || s.remind === ''
+        ? null
+        : Number.isFinite(Number(s.remind))
+          ? Math.max(0, Math.round(Number(s.remind)))
+          : null;
+    return {
+      id: String(s.id || uid('s')),
+      title: String(s.title || '').trim() || '未命名日程',
+      date,
+      endDate,
+      allDay,
+      start,
+      end,
+      location: typeof s.location === 'string' ? s.location : '',
+      note: typeof s.note === 'string' ? s.note : '',
+      category: typeof s.category === 'string' ? s.category : '',
+      color: SCHEDULE_COLORS.includes(s.color) ? s.color : '',
+      tags: Array.isArray(s.tags)
+        ? [...new Set(s.tags.map((t) => String(t).trim()).filter(Boolean))]
+        : [],
+      links: Array.isArray(s.links)
+        ? [...new Set(s.links.map((x) => String(x)).filter(Boolean))]
+        : [],
+      repeat: normalizeRepeat(s.repeat),
+      remind,
+      done: !!s.done,
+      repeatOf: s.repeatOf ? String(s.repeatOf) : null,
+      createdAt: s.createdAt || nowIso(),
+      updatedAt: s.updatedAt || s.createdAt || nowIso(),
+      deleted: !!s.deleted,
+      deletedAt: s.deleted ? s.deletedAt || nowIso() : null,
+    };
+  }
+
   /** 使用说明的内容（首次启动插入；旧版遗留的说明条目也会更新成这一份） */
   welcomePayload() {
     return {
@@ -178,6 +250,7 @@ class ArchiveStore {
         '3. 在列表上方的搜索框里输入关键词，标题、正文、来源、标签、附件名都能搜到',
         '4. 勾选若干条后点「导出 Markdown」，就能一次性交给 AI 阅读',
         '5. 删掉的资料会先进回收站，随时可以还原',
+        '6. 左栏「日历」（⌘3）里安排日程：双击空白格新建、拖动色条改期、重复日程只存规则；日程还能关联资料，两边互相看得到',
         '',
         '## 这条是怎么写出来的',
         '',
@@ -190,6 +263,7 @@ class ArchiveStore {
         '| 换配色 | 左下角「设置」里选配色主题 |',
         '| 屏幕不够宽 | 点左栏和列表栏顶部的「«」把它们收起来 |',
         '| 专心写字 | 编辑器工具栏上的「专注」按钮 |',
+        '| 安排日程 | 左栏「日历」，⌘3 跳过去 |',
         '| 备份与恢复 | 「设置」里的备份与恢复 |',
         '',
         '## 数据存在哪',
@@ -285,6 +359,7 @@ class ArchiveStore {
 
   stats() {
     const active = this.data.entries.filter((e) => !e.deleted);
+    const activeSchedules = (this.data.schedules || []).filter((s) => !s.deleted);
     const byCategory = {};
     const byType = {};
     const tagMap = {};
@@ -293,6 +368,10 @@ class ArchiveStore {
       byCategory[c] = (byCategory[c] || 0) + 1;
       byType[e.type] = (byType[e.type] || 0) + 1;
       for (const t of e.tags) tagMap[t] = (tagMap[t] || 0) + 1;
+    }
+    // 标签是资料与日程共用的体系，所以统计也合并
+    for (const s of activeSchedules) {
+      for (const t of s.tags) tagMap[t] = (tagMap[t] || 0) + 1;
     }
     return {
       total: active.length,
@@ -305,7 +384,26 @@ class ArchiveStore {
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh')),
       categories: [...this.data.categories],
+      schedules: {
+        total: activeSchedules.length,
+        trashed: (this.data.schedules || []).filter((s) => s.deleted).length,
+        done: activeSchedules.filter((s) => s.done).length,
+        repeating: activeSchedules.filter((s) => s.repeat && s.repeat.freq !== 'none').length,
+      },
     };
+  }
+
+  listSchedules({ includeDeleted = false } = {}) {
+    return (this.data.schedules || []).filter((s) => includeDeleted || !s.deleted);
+  }
+
+  getSchedule(id) {
+    return (this.data.schedules || []).find((s) => s.id === id) || null;
+  }
+
+  /** 某条资料被哪些日程关联（去掉收进回收站的日程与已删资料） */
+  schedulesLinkedTo(entryId) {
+    return this.listSchedules().filter((s) => (s.links || []).includes(entryId));
   }
 
   // ---------- 写入 ----------
@@ -391,13 +489,123 @@ class ArchiveStore {
       const dir = path.join(this.attachmentsPath, entry.id);
       await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
     }
+    // 资料彻底没了，日程里的关联也要跟着清掉
+    this.pruneDanglingLinks();
     await this.flush();
     return n;
   }
 
   async emptyTrash() {
     const ids = this.data.entries.filter((e) => e.deleted).map((e) => e.id);
-    return this.removeForever(ids);
+    const n = await this.removeForever(ids);
+    const sIds = (this.data.schedules || []).filter((s) => s.deleted).map((s) => s.id);
+    const m = await this.removeSchedulesForever(sIds);
+    return n + m;
+  }
+
+  // ---------- 日程 ----------
+
+  async createSchedule(payload = {}) {
+    const wantedId =
+      payload.id && typeof payload.id === 'string' && !this.getSchedule(payload.id)
+        ? payload.id
+        : uid('s');
+    const sched = this.normalizeSchedule({
+      ...payload,
+      id: wantedId,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      deleted: false,
+      deletedAt: null,
+    });
+    this.data.schedules.unshift(sched);
+    if (sched.category && !this.data.categories.includes(sched.category)) {
+      this.data.categories.push(sched.category);
+    }
+    this.pruneDanglingLinks();
+    await this.flush();
+    return sched;
+  }
+
+  async updateSchedule(id, patch = {}) {
+    const sched = this.getSchedule(id);
+    if (!sched) throw new Error('日程不存在：' + id);
+    const allowed = [
+      'title',
+      'date',
+      'endDate',
+      'allDay',
+      'start',
+      'end',
+      'location',
+      'note',
+      'category',
+      'color',
+      'tags',
+      'links',
+      'repeat',
+      'remind',
+      'done',
+      'repeatOf',
+    ];
+    for (const key of allowed) {
+      if (patch[key] !== undefined) sched[key] = patch[key];
+    }
+    const fixed = this.normalizeSchedule({
+      ...sched,
+      id: sched.id,
+      createdAt: sched.createdAt,
+    });
+    Object.assign(sched, fixed, { updatedAt: nowIso() });
+    if (sched.category && !this.data.categories.includes(sched.category)) {
+      this.data.categories.push(sched.category);
+    }
+    this.pruneDanglingLinks();
+    await this.flush();
+    return sched;
+  }
+
+  async trashSchedules(ids) {
+    const list = Array.isArray(ids) ? ids : [ids];
+    let n = 0;
+    for (const id of list) {
+      const s = this.getSchedule(id);
+      if (s && !s.deleted) {
+        s.deleted = true;
+        s.deletedAt = nowIso();
+        n++;
+      }
+    }
+    await this.flush();
+    return n;
+  }
+
+  async restoreSchedules(ids) {
+    const list = Array.isArray(ids) ? ids : [ids];
+    let n = 0;
+    for (const id of list) {
+      const s = this.getSchedule(id);
+      if (s && s.deleted) {
+        s.deleted = false;
+        s.deletedAt = null;
+        n++;
+      }
+    }
+    await this.flush();
+    return n;
+  }
+
+  async removeSchedulesForever(ids) {
+    const list = Array.isArray(ids) ? ids : [ids];
+    let n = 0;
+    for (const id of list) {
+      const idx = this.data.schedules.findIndex((s) => s.id === id);
+      if (idx === -1) continue;
+      this.data.schedules.splice(idx, 1);
+      n++;
+    }
+    await this.flush();
+    return n;
   }
 
   async addCategory(name) {
@@ -423,6 +631,9 @@ class ArchiveStore {
     for (const e of this.data.entries) {
       if (e.category === from) e.category = to;
     }
+    for (const s of this.data.schedules || []) {
+      if (s.category === from) s.category = to;
+    }
     await this.flush();
     return this.data.categories;
   }
@@ -432,6 +643,9 @@ class ArchiveStore {
     this.data.categories = this.data.categories.filter((x) => x !== c);
     for (const e of this.data.entries) {
       if (e.category === c) e.category = '';
+    }
+    for (const s of this.data.schedules || []) {
+      if (s.category === c) s.category = '';
     }
     await this.flush();
     return this.data.categories;

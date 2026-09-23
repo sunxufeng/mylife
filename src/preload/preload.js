@@ -30,6 +30,15 @@ contextBridge.exposeInMainWorld('api', {
   deleteForever: (ids) => invoke('entry:delete-forever', ids),
   emptyTrash: () => invoke('entry:empty-trash'),
 
+  // 日程
+  createSchedule: (payload) => invoke('schedule:create', payload),
+  updateSchedule: (id, patch) => invoke('schedule:update', id, patch),
+  trashSchedules: (ids) => invoke('schedule:trash', ids),
+  restoreSchedules: (ids) => invoke('schedule:restore', ids),
+  deleteSchedulesForever: (ids) => invoke('schedule:delete-forever', ids),
+  splitSchedule: (id, date) => invoke('schedule:split', id, date),
+  exportIcs: (options) => invoke('schedule:export-ics', options),
+
   // 草稿
   newDraftId: () => invoke('draft:new-id'),
   discardDraft: (id) => invoke('draft:discard', id),
@@ -54,7 +63,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // 导出
   exportMarkdown: (ids, options) => invoke('export:markdown', ids, options),
-  exportPreview: (ids) => invoke('export:preview', ids),
+  exportPreview: (ids, options) => invoke('export:preview', ids, options),
 
   // 备份 / 恢复
   createBackup: (path) => invoke('backup:create', path),
@@ -80,12 +89,16 @@ contextBridge.exposeInMainWorld('api', {
   onMenu: (handler) => {
     const channels = [
       'menu:new',
+      'menu:new-schedule',
       'menu:save',
       'menu:search',
       'menu:settings',
       'menu:backup',
       'menu:backup-as',
       'menu:restore',
+      'menu:export-ics',
+      'menu:calendar',
+      'menu:all',
       'menu:help',
       'menu:toggle-side',
       'menu:toggle-list',
@@ -93,5 +106,14 @@ contextBridge.exposeInMainWorld('api', {
     for (const ch of channels) {
       ipcRenderer.on(ch, () => handler(ch));
     }
+  },
+
+  // 日程提醒（应用运行期间才会有）
+  onReminder: (handler) => {
+    ipcRenderer.on('reminder:fire', (_e, payload) => handler({ type: 'fire', ...payload }));
+    ipcRenderer.on('reminder:summary', (_e, payload) => handler({ type: 'summary', ...payload }));
+  },
+  onReminderFocus: (handler) => {
+    ipcRenderer.on('reminder:focus', (_e, payload) => handler(payload));
   },
 });

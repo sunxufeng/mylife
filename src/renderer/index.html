@@ -56,11 +56,11 @@
         </footer>
       </aside>
 
-      <!-- ============ 中：列表 ============ -->
+      <!-- ============ 中：列表 / 日历 ============ -->
       <main class="list-pane" id="listPane">
         <button class="rail-btn" id="listExpand" title="展开列表栏（⌘2）">»</button>
 
-        <div class="list-head drag-region">
+        <div class="list-head drag-region" id="listHead">
           <div class="search-wrap" id="searchWrap">
             <span class="search-ico">⌕</span>
             <input id="searchInput" type="text" placeholder="搜索标题、正文、来源、标签…" autocomplete="off" spellcheck="false" />
@@ -89,6 +89,30 @@
             <button class="danger hidden" id="btnBulkDelete">彻底删除</button>
           </div>
         </div>
+
+        <!-- 日历工具条（只在日历视图显示） -->
+        <div class="cal-head hidden" id="calHead">
+          <div class="cal-title-row">
+            <button class="cal-nav" id="calPrev" title="上一月（←）">‹</button>
+            <button class="cal-nav" id="calNext" title="下一月（→）">›</button>
+            <button class="cal-jump" id="calToday" title="回到今天（T）">今天</button>
+            <span class="cal-title" id="calTitle"></span>
+            <span class="spacer"></span>
+            <div class="seg" id="calViewSeg">
+              <button data-v="month" class="on" title="月视图">月</button>
+              <button data-v="agenda" title="议程视图">议程</button>
+            </div>
+            <div class="seg hidden" id="calRangeSeg">
+              <button data-r="7">7 天</button>
+              <button data-r="30" class="on">30 天</button>
+              <button data-r="90">90 天</button>
+            </div>
+            <button class="tb" id="calNew" title="新建日程（⌘⇧N）">＋ 日程</button>
+            <button class="tb" id="calExport" title="导出标准 iCalendar 文件">导出 .ics</button>
+          </div>
+          <div class="cal-week" id="calWeek"></div>
+        </div>
+
         <div class="list-scroll" id="listScroll"></div>
       </main>
 
@@ -99,10 +123,12 @@
       </section>
     </div>
 
+    <div id="remindBar" class="remind-bar hidden"></div>
     <div id="modalRoot"></div>
     <div id="toastRoot"></div>
 
     <script src="themes.js"></script>
+    <script src="schedule.js"></script>
     <script src="markdown.js"></script>
     <script src="app.js"></script>
   </body>

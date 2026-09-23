@@ -630,6 +630,360 @@ module.exports = async function ({ win, app, shot, errors }) {
   assert(fs.existsSync(restoreInfo.safetyDir), '恢复前自动留存了保险副本');
   await shot('恢复后-资料库回到备份状态');
 
+  // ---- 日历与日程 ---------------------------------------------------------
+  const pad = (n) => String(n).padStart(2, '0');
+  const NOW = new Date();
+  const TODAY = `${NOW.getFullYear()}-${pad(NOW.getMonth() + 1)}-${pad(NOW.getDate())}`;
+  const TOMORROW = (() => {
+    const d = new Date(NOW.getTime() + 86400000);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  })();
+
+  const calSeed = await run(`(async () => {
+    const api = window.api;
+    const s = await api.snapshot();
+    const live = s.entries.filter((e) => !e.deleted);
+    const desk = live.find((e) => e.title.includes('书桌一角'));
+    const attention = live.find((e) => e.title.includes('注意力'));
+    const mk = async (p) => { const r = await api.createSchedule(p); if (!r.ok) throw new Error(r.error); return r.schedule; };
+    const ids = [];
+    ids.push((await mk({ title:'教学组例会', date:'${TODAY}', start:'10:00', end:'11:30', location:'三楼会议室', category:'工作资料', tags:['教学','会议'], links:[desk.id], remind:15, color:'blue' })).id);
+    // 与上一条时间重叠，用来验冲突提示
+    ids.push((await mk({ title:'与外部老师的电话沟通', date:'${TODAY}', start:'11:00', end:'12:00', category:'工作资料', tags:['教学'] })).id);
+    ids.push((await mk({ title:'吴倩 1:1 沟通', date:'${TODAY}', start:'15:00', end:'16:00', location:'图书馆', tags:['教学'], links:[attention.id] })).id);
+    ids.push((await mk({ title:'提交本周督导进度', date:'${TODAY}', allDay:true, category:'工作资料' })).id);
+    ids.push((await mk({ title:'家长会', date:'${TOMORROW}', start:'19:00', end:'20:30', allDay:false })).id);
+    // 重复日程：从今天起每周一次
+    ids.push((await mk({ title:'每周督导会', date:'${TODAY}', start:'09:00', end:'09:30', repeat:{ freq:'weekly', count:8 } })).id);
+    // 跨天全天
+    ids.push((await mk({ title:'外出调研', date:'${TOMORROW}', endDate:'${TOMORROW}', allDay:true })).id);
+    const s2 = await api.snapshot();
+    applySnapshot(s2); renderAll();
+    return { ids, desk: desk.id, attention: attention.id, schedules: s2.schedules.length };
+  })()`);
+  log('已创建日程：' + JSON.stringify(calSeed));
+  assert(calSeed.ids.length === 7 && calSeed.schedules >= 7, '日程通过 IPC 写入成功');
+
+  // 切到日历视图（点左栏那一项）
+  const entered = await run(`(() => {
+    const item = [...document.querySelectorAll('.nav-item')].find((b) => b.textContent.includes('日历'));
+    if (!item) return 'NO_ITEM';
+    item.click();
+    return {
+      视图: state.view,
+      工具条可见: !document.querySelector('#calHead').classList.contains('hidden'),
+      格子数: document.querySelectorAll('.cal-cell').length,
+      周标题: document.querySelectorAll('.cal-wd').length,
+      今天格子里的色条: document.querySelectorAll('.cal-cell.today .cal-chip').length,
+      溢出按钮: (document.querySelector('.cal-cell.today .cal-more') || {}).textContent || '',
+      侧栏今日角标: item.querySelector('.count').textContent,
+    };
+  })()`);
+  log('进入日历：' + JSON.stringify(entered));
+  assert(entered.视图 === 'calendar' && entered.工具条可见, '点左栏「日历」切到日历视图，工具条出现');
+  assert(entered.格子数 === 42 && entered.周标题 === 7, '月视图是 6×7 网格、周一开头');
+  assert(entered.今天格子里的色条 === 2 && entered.溢出按钮 === '+3', `今天 5 条日程只显示 2 条 + 溢出按钮（实际 ${entered.溢出按钮}）`);
+  assert(entered.侧栏今日角标.includes('5'), '左栏「日历」挂着今天的日程条数', entered.侧栏今日角标);
+  await shot('日历-月视图');
+
+  // 选某天 → 右栏是那一天的面板
+  const dayPanel = await run(`(() => {
+    document.querySelector('.cal-cell.today').click();
+    return {
+      标题: (document.querySelector('.cal-detail .d-title') || {}).textContent || '',
+      行数: document.querySelectorAll('#dayList .sched-row').length,
+      未来行数: document.querySelectorAll('#upcomingList .sched-row').length,
+      冲突提示: document.querySelectorAll('.cal-detail .sr-conflict').length,
+      有今日统计: document.body.textContent.includes('本周日程'),
+    };
+  })()`);
+  log('某天面板：' + JSON.stringify(dayPanel));
+  assert(dayPanel.行数 === 5, `右栏列出当天全部 5 条日程（实际 ${dayPanel.行数}）`);
+  assert(dayPanel.冲突提示 >= 2, '两条时间重叠的日程上有冲突提示');
+  assert(dayPanel.有今日统计, '选的是今天，右栏多出「本周」统计');
+
+  // 选一条日程 → 详情（含关联资料）
+  const detail = await run(`(() => {
+    const row = [...document.querySelectorAll('.cal-detail .sched-row')].find((r) => r.textContent.includes('教学组例会'));
+    row.click();
+    const el2 = document.querySelector('.cal-detail');
+    return {
+      标题: (el2.querySelector('.d-title') || {}).textContent || '',
+      时间段: (el2.querySelector('.d-meta') || {}).textContent || '',
+      关联资料卡片: el2.querySelectorAll('.link-card').length,
+      关联资料标题: (el2.querySelector('.link-card .lc-title') || {}).textContent || '',
+      有重复按钮: !![...document.querySelectorAll('#detailBar button')].find((b) => b.textContent === '只改这一次'),
+    };
+  })()`);
+  log('日程详情：' + JSON.stringify(detail));
+  assert(detail.标题 === '教学组例会', '右栏切到日程详情');
+  assert(detail.时间段.includes('10:00–11:30'), '详情里显示时间段');
+  assert(detail.关联资料卡片 === 1 && detail.关联资料标题.includes('书桌一角'), '详情里能看到关联的资料卡片');
+  await shot('日历-日程详情');
+
+  // 反向关联：资料详情里出现「相关日程」
+  await run(`(() => {
+    state.view = 'all';
+    state.selectedScheduleId = null;
+    state.editing = null;
+    state.selectedId = ${JSON.stringify(calSeed.desk)};
+    renderAll();
+    return 1;
+  })()`);
+  const reverseView = await run(`(() => {
+    const heads = [...document.querySelectorAll('.d-section > h4')].map((h) => h.textContent);
+    const row = document.querySelector('.d-section .sched-row');
+    return { 段落: heads, 有相关日程: heads.some((h) => h.startsWith('相关日程')), 行标题: row ? row.textContent : '' };
+  })()`);
+  log('资料详情反向关联：' + JSON.stringify(reverseView));
+  assert(reverseView.有相关日程, '资料详情里出现「相关日程」区块');
+  assert(reverseView.行标题.includes('教学组例会'), '区块里列出了关联的那条日程');
+  await shot('资料详情-相关日程');
+
+  // 点空白格新建 → 自动带日期 → 保存后出现在格子与右栏
+  const created = await run(`(async () => {
+    state.view = 'calendar';
+    state.selectedId = null;
+    state.selectedScheduleId = null;
+    state.calSelectedDate = '${TODAY}';
+    state.calCursor = '${TODAY}';
+    renderAll();
+    const cells = [...document.querySelectorAll('.cal-cell')];
+    const target = cells[cells.length - 1]; // 网格最后一格，肯定不是今天
+    target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 260));
+    const hadEditor = !!document.querySelector('#sTitle');
+    const dateValue = (document.querySelector('#sDate') || {}).value || '';
+    document.querySelector('#sTitle').value = '新建的日程';
+    document.querySelector('#sTitle').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#sStart').value = '08:00';
+    document.querySelector('#sStart').dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#sEnd').value = '08:45';
+    document.querySelector('#sEnd').dispatchEvent(new Event('change', { bubbles: true }));
+    // 顺手关联一条资料 + 加两个标签
+    document.querySelector('.lp-row').click();
+    const ti = document.querySelector('#sTagInput');
+    ti.value = '临时';
+    ti.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await saveScheduleEditing();
+    await new Promise((r) => setTimeout(r, 320));
+    const saved = state.schedules.find((s) => s.title === '新建的日程');
+    return {
+      hadEditor,
+      带上的日期: dateValue,
+      目标格日期: target.dataset.date,
+      已保存: !!saved,
+      标签: saved ? saved.tags.join(',') : '',
+      关联: saved ? saved.links.length : 0,
+      右栏是详情: !!document.querySelector('.cal-detail .d-title'),
+      格子里的色条: document.querySelectorAll('.cal-chip').length,
+    };
+  })()`);
+  log('双击空白格新建：' + JSON.stringify(created));
+  assert(created.hadEditor, '双击空白格直接打开日程编辑器');
+  assert(created.带上的日期 === created.目标格日期, '编辑器自动带上那一格的日期');
+  assert(created.已保存 && created.标签 === '临时' && created.关联 === 1, '日程保存成功（含标签与关联资料）');
+  await shot('日历-新建日程');
+
+  // 完成勾选
+  const doneToggle = await run(`(async () => {
+    state.selectedScheduleId = null;
+    state.calSelectedDate = '${TODAY}';
+    state.calCursor = '${TODAY}';
+    renderAll();
+    const before = state.schedules.find((s) => s.title === '吴倩 1:1 沟通').done;
+    const row = [...document.querySelectorAll('.cal-detail .sched-row')].find((r) => r.textContent.includes('吴倩 1:1 沟通'));
+    row.querySelector('.done-circle').click();
+    await new Promise((r) => setTimeout(r, 320));
+    const after = state.schedules.find((s) => s.title === '吴倩 1:1 沟通').done;
+    return { 之前: before, 之后: after, 行上有勾: !!document.querySelector('.cal-detail .sched-row.done') };
+  })()`);
+  log('完成勾选：' + JSON.stringify(doneToggle));
+  assert(doneToggle.之前 === false && doneToggle.之后 === true, '点圆圈可以把日程标成完成');
+  assert(doneToggle.行上有勾, '完成的行在界面上有视觉区分');
+
+  // 拖拽改期（拖全天那条：格子前 2 条里一定有它，而且它不重复、不会弹二次确认）
+  const drag = await run(`(async () => {
+    const cells = [...document.querySelectorAll('.cal-cell')];
+    const todayCell = cells.find((c) => c.classList.contains('today'));
+    const chip = [...todayCell.querySelectorAll('.cal-chip')].find((c) => c.textContent.includes('提交本周督导进度'));
+    if (!chip) return { 找不到色条: todayCell.textContent };
+    const idx = cells.indexOf(todayCell);
+    const target = cells[idx + 1];
+    const targetDate = target.dataset.date;
+    const dt = new DataTransfer();
+    chip.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    const 高亮 = target.classList.contains('drop-target');
+    target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    await new Promise((r) => setTimeout(r, 420));
+    const moved = state.schedules.find((s) => s.title === '提交本周督导进度');
+    return { 高亮, 目标日期: targetDate, 改后日期: moved.date, 原日期: '${TODAY}' };
+  })()`);
+  log('拖拽改期：' + JSON.stringify(drag));
+  assert(drag.高亮, '拖到别的日子时目标格会高亮');
+  assert(drag.改后日期 === drag.目标日期 && drag.改后日期 !== drag.原日期, '拖拽后日程日期真的改了');
+  await shot('日历-拖拽改期');
+
+  // 议程视图
+  const agenda = await run(`(async () => {
+    document.querySelector('#calViewSeg button[data-v="agenda"]').click();
+    await new Promise((r) => setTimeout(r, 280));
+    document.querySelector('#calRangeSeg button[data-r="7"]').click();
+    await new Promise((r) => setTimeout(r, 240));
+    return {
+      视图: state.calView,
+      范围: state.calRange,
+      分组数: document.querySelectorAll('.cal-agenda .ag-day').length,
+      有项: document.querySelectorAll('.cal-agenda .sched-row').length,
+      标题: document.querySelector('#calTitle').textContent,
+    };
+  })()`);
+  log('议程视图：' + JSON.stringify(agenda));
+  assert(agenda.视图 === 'agenda' && agenda.范围 === 7, '可以切到议程视图并选 7 天');
+  assert(agenda.分组数 >= 2 && agenda.有项 >= 3, '议程按天分组列出日程');
+  await shot('日历-议程视图');
+  await run(`(async () => { document.querySelector('#calViewSeg button[data-v="month"]').click(); await new Promise(r=>setTimeout(r,220)); return 1; })()`);
+
+  // 换主题，日历配色不串
+  const themeSafe = await run(`(() => {
+    const chip = () => {
+      const c = document.querySelector('.cal-chip') || document.querySelector('.sched-row');
+      const cs = getComputedStyle(c);
+      return cs.borderLeftColor + '|' + cs.backgroundColor;
+    };
+    applyTheme('sage');
+    const a = chip();
+    const accentA = getComputedStyle(document.documentElement).getPropertyValue('--moss');
+    applyTheme('wine');
+    const b = chip();
+    const accentB = getComputedStyle(document.documentElement).getPropertyValue('--moss');
+    applyTheme('sage');
+    return { 鼠尾草绿: a, 深酒红: b, 主题色变了: accentA !== accentB };
+  })()`);
+  log('主题与日程配色：' + JSON.stringify(themeSafe));
+  assert(themeSafe.主题色变了, '换主题确实改变了强调色');
+  assert(themeSafe.鼠尾草绿 === themeSafe.深酒红, '日程色标是固定 6 色，换主题不串色');
+
+  // 标签视图里资料与日程同时出现
+  const mixed = await run(`(() => {
+    state.view = 'tag:教学';
+    state.selectedId = null;
+    state.selectedScheduleId = null;
+    renderAll();
+    return {
+      资料卡片: document.querySelectorAll('.card:not(.sched-card)').length,
+      日程卡片: document.querySelectorAll('.card.sched-card').length,
+      分组: [...document.querySelectorAll('.group-head')].map((g) => g.textContent),
+    };
+  })()`);
+  log('标签视图混合：' + JSON.stringify(mixed));
+  assert(mixed.日程卡片 >= 2, '标签点进去同时列出资料与日程');
+  assert(mixed.分组.some((g) => g.startsWith('日程')), '日程单独成组，不会和资料混在一起认不出');
+  await shot('标签视图-资料与日程');
+
+  // 回收站分两组 + 还原
+  const trashG = await run(`(async () => {
+    const api = window.api;
+    const target = state.schedules.find((s) => s.title === '家长会');
+    await api.trashSchedules([target.id]);
+    const victim = state.entries.filter((e) => !e.deleted).slice(-1)[0];
+    await api.trashEntries([victim.id]);
+    const s = await api.snapshot();
+    applySnapshot(s);
+    state.view = 'trash';
+    state.selectedId = null;
+    state.selectedScheduleId = null;
+    renderAll();
+    return {
+      分组: [...document.querySelectorAll('.group-head')].map((g) => g.textContent),
+      日程行: document.querySelectorAll('.sched-row').length,
+      有还原按钮: [...document.querySelectorAll('.sr-acts button')].map((b) => b.textContent).includes('还原'),
+    };
+  })()`);
+  log('回收站分组：' + JSON.stringify(trashG));
+  assert(trashG.分组.some((g) => g.startsWith('资料')) && trashG.分组.some((g) => g.startsWith('日程')), '回收站里资料与日程分两组显示');
+  assert(trashG.日程行 === 1 && trashG.有还原按钮, '回收站里的日程带还原 / 彻底删除按钮');
+  await shot('回收站-资料与日程分组');
+
+  const restored2 = await run(`(async () => {
+    const api = window.api;
+    const btn = [...document.querySelectorAll('.sr-acts button')].find((b) => b.textContent === '还原');
+    btn.click();
+    await new Promise((r) => setTimeout(r, 320));
+    const back = state.schedules.find((s) => s.title === '家长会');
+    // 把资料也还原，别影响后面的用例
+    const s = await api.snapshot();
+    const trashed = s.entries.filter((e) => e.deleted).map((e) => e.id);
+    if (trashed.length) { const r = await api.restoreEntries(trashed); applySnapshot(r); }
+    renderAll();
+    return { 还原成功: back && !back.deleted, 回收站日程: state.stats.schedules.trashed };
+  })()`);
+  log('回收站还原日程：' + JSON.stringify(restored2));
+  assert(restored2.还原成功 && restored2.回收站日程 === 0, '回收站里的日程可以还原');
+
+  // 备份 → 改乱 → 恢复，日程要一起回来
+  const calZip = path.join(tmp, '日历备份.zip');
+  const calBackup = await run(`(async () => {
+    const s = await window.api.snapshot();
+    return { 日程数: s.schedules.length, 标题: s.schedules.map((x) => x.title).sort().join('|') };
+  })()`);
+  const calBk = await run(`(async () => { const r = await window.api.createBackup(${JSON.stringify(calZip)}); return r.ok ? { bytes: r.bytes } : r; })()`);
+  assert(!calBk.error && fs.existsSync(calZip), '带日程的资料库可以正常备份');
+
+  const calBroken = await run(`(async () => {
+    await window.api.createSchedule({ title:'备份之后才建的日程', date:'${TODAY}' });
+    const victim = state.schedules.find((s) => s.title === '每周督导会');
+    await window.api.trashSchedules([victim.id]);
+    const s = await window.api.snapshot(); applySnapshot(s); renderAll();
+    return { 日程数: state.schedules.filter((x) => !x.deleted).length, 回收站日程: state.stats.schedules.trashed };
+  })()`);
+  assert(calBroken.回收站日程 === 1, '制造了与备份不一致的日程现状');
+
+  const calAfter = await run(`(async () => {
+    const r = await window.api.restoreBackup(${JSON.stringify(calZip)});
+    if (!r.ok) return r;
+    applySnapshot(r); renderAll();
+    const s = await window.api.snapshot();
+    return { 日程数: s.schedules.length, 标题: s.schedules.map((x) => x.title).sort().join('|'), 事件: r.schedules };
+  })()`);
+  log('日历备份恢复：' + JSON.stringify(calAfter));
+  assert(!calAfter.error, '恢复 IPC 返回成功');
+  assert(calAfter.标题 === calBackup.标题, '恢复后每条日程与备份时完全一致');
+  assert(!calAfter.标题.includes('备份之后才建的日程'), '备份之后新建的日程被覆盖掉');
+
+  // .ics 导出：只验界面这一层（真弹保存框会卡住自测，落盘部分由数据层自测覆盖）
+  const icsUi = await run(`(async () => {
+    state.view = 'calendar';
+    state.selectedScheduleId = null;
+    renderAll();
+    document.querySelector('#calExport').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const opts = document.querySelectorAll('#modalRoot input[name="icsRange"]').length;
+    const labels = [...document.querySelectorAll('#modalRoot .opt-row .t')].map((n) => n.textContent);
+    document.querySelector('#modalRoot .modal-foot button.tb').click();
+    await new Promise((r) => setTimeout(r, 180));
+    return { 选项: opts, labels, 已关闭: !document.querySelector('#modalRoot .overlay') };
+  })()`);
+  log('.ics 导出界面：' + JSON.stringify(icsUi));
+  assert(icsUi.选项 === 3 && icsUi.labels.includes('全部日程'), '导出 .ics 可以先选范围（当前月 / 未来 30 天 / 全部）');
+  assert(icsUi.已关闭, '取消后弹层正常关闭');
+
+  // 提醒条
+  const remind = await run(`(() => {
+    pushReminders('fire', [{ key:'t1', id: state.schedules[0].id, title:'教学组例会', date:'${TODAY}', time:'10:00', location:'' }]);
+    const bar = document.querySelector('#remindBar');
+    const shown = !bar.classList.contains('hidden');
+    const text = bar.textContent;
+    bar.querySelector('.rb-close').click();
+    return { shown, text, 关掉后隐藏: bar.classList.contains('hidden') };
+  })()`);
+  log('提醒条：' + JSON.stringify(remind));
+  assert(remind.shown && remind.text.includes('教学组例会'), '提醒条能弹出并显示日程');
+  assert(remind.关掉后隐藏, '提醒条可以关掉');
+
+  await run(`(() => { state.view = 'all'; state.selectedId = null; state.selectedScheduleId = null; renderAll(); return 1; })()`);
+
   // ---- 空态 / 概览 -------------------------------------------------------
   await run(`(() => { state.selectedId = null; state.editing = null; renderAll(); return 1; })()`);
   await shot('概览空态');

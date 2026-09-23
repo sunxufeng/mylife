@@ -2020,3 +2020,821 @@ pre.preview-md {
   accent-color: var(--moss);
 }
 
+/* ==========================================================================
+   日历与日程
+   日程色标是一套固定的 6 色，与主题强调色错开，所以换主题也不会串色。
+   ========================================================================== */
+
+/* 日程色板 —— 每个色系只声明两个变量，其余样式共用 */
+.c-moss {
+  --sc: #6e8163;
+  --sc-soft: rgba(110, 129, 99, 0.16);
+}
+.c-amber {
+  --sc: #b8863b;
+  --sc-soft: rgba(184, 134, 59, 0.17);
+}
+.c-blue {
+  --sc: #57799c;
+  --sc-soft: rgba(87, 121, 156, 0.16);
+}
+.c-coral {
+  --sc: #bd6249;
+  --sc-soft: rgba(189, 98, 73, 0.16);
+}
+.c-pink {
+  --sc: #a96c88;
+  --sc-soft: rgba(169, 108, 136, 0.16);
+}
+.c-gray {
+  --sc: #85898f;
+  --sc-soft: rgba(133, 137, 143, 0.16);
+}
+
+/* 侧栏「日历」项后面的今日角标 */
+.nav-item .pin {
+  margin-left: 6px;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  color: #fff;
+  background: var(--danger);
+  padding: 1px 5px;
+  border-radius: 20px;
+  letter-spacing: 0.02em;
+}
+
+/* ------------------------------------------------------------------ 工具条 */
+
+.cal-head {
+  flex: 0 0 auto;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel-2);
+}
+.cal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.cal-nav {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+.cal-nav:hover {
+  border-color: var(--moss-line);
+  color: var(--moss-deep);
+  background: var(--moss-soft);
+}
+.cal-jump {
+  font-size: 11.5px;
+  padding: 4px 9px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-2);
+}
+.cal-jump:hover {
+  border-color: var(--moss-line);
+  color: var(--moss-deep);
+  background: var(--moss-soft);
+}
+.cal-title {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-left: 4px;
+  color: var(--ink);
+}
+.cal-title-row .spacer {
+  flex: 1;
+}
+.cal-title-row .seg button {
+  padding: 3px 9px;
+}
+
+.cal-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 8px;
+}
+.cal-wd {
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ink-4);
+  font-family: var(--mono);
+  padding-bottom: 3px;
+}
+
+/* 日历模式下，列表栏要从 344px 放宽 —— 7 列网格挤在窄栏里没法看 */
+.app.cal-mode {
+  --col-list: min(680px, calc(100vw - 240px - 320px));
+}
+
+/* 日历模式下，列表栏的脑袋只留搜索框 */
+.list-head.cal-mode .filter-row,
+.list-head.cal-mode .check-all,
+.list-head.cal-mode #listCount,
+.list-head.cal-mode #btnClearFilters,
+.list-head.cal-mode #bulkBar {
+  display: none !important;
+}
+
+.list-scroll.cal-scroll {
+  padding: 8px 10px 24px;
+}
+
+/* ------------------------------------------------------------------ 月视图 */
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+.cal-cell {
+  min-height: 78px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  padding: 3px 3px 4px;
+  background: var(--panel);
+  border-color: var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  overflow: hidden;
+}
+.cal-cell:hover {
+  border-color: var(--moss-line);
+}
+.cal-cell.out {
+  background: transparent;
+  border-color: transparent;
+}
+.cal-cell.out .cal-daynum {
+  color: var(--ink-4);
+  opacity: 0.55;
+}
+.cal-cell.weekend .cal-daynum {
+  color: var(--danger);
+  opacity: 0.75;
+}
+.cal-cell.today {
+  background: var(--moss-soft);
+  border-color: var(--moss-line);
+}
+.cal-cell.sel {
+  border-color: var(--moss);
+  box-shadow: 0 0 0 2px var(--moss-soft);
+}
+.cal-cell.drop-target {
+  background: var(--gold-soft);
+  border-color: var(--gold);
+  border-style: dashed;
+}
+.cal-daynum {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  line-height: 1.6;
+  text-align: right;
+  padding-right: 2px;
+}
+.cal-cell.today .cal-daynum {
+  font-weight: 700;
+  color: var(--moss-deep);
+}
+.cal-cell.today .cal-daynum::after {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--moss);
+  margin-left: 3px;
+  vertical-align: 1.5px;
+}
+
+.cal-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+.cal-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border-left: 2.5px solid var(--sc, #6e8163);
+  background: var(--sc-soft, rgba(110, 129, 99, 0.16));
+  font-size: 10.5px;
+  line-height: 1.35;
+  cursor: grab;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.cal-chip:hover {
+  filter: brightness(0.97);
+  box-shadow: var(--shadow-1);
+}
+.cal-chip.dragging {
+  opacity: 0.45;
+}
+.cal-chip.done .chip-title {
+  text-decoration: line-through;
+  color: var(--ink-4);
+}
+.cal-chip.span-start {
+  border-top-left-radius: 8px;
+}
+.cal-chip.span-mid {
+  border-radius: 0;
+}
+.cal-chip .chip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--sc, #6e8163);
+  flex: 0 0 auto;
+}
+.cal-chip .chip-time {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-2);
+  flex: 0 0 auto;
+}
+.cal-chip .chip-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  color: var(--ink);
+}
+.cal-more {
+  font-size: 9.5px;
+  font-family: var(--mono);
+  color: var(--ink-3);
+  text-align: left;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.cal-more:hover {
+  background: var(--panel-3);
+  color: var(--moss-deep);
+}
+.cal-tip {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--ink-4);
+  line-height: 1.8;
+}
+
+/* ------------------------------------------------------------------ 议程 */
+
+.cal-agenda {
+  display: grid;
+  gap: 4px;
+}
+.ag-day {
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  overflow: hidden;
+}
+.ag-day.is-today {
+  border-color: var(--moss-line);
+  background: var(--panel);
+}
+.ag-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 11px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+  font-size: 12px;
+}
+.ag-day.is-today .ag-head {
+  background: var(--moss-soft);
+}
+.ag-head:hover {
+  background: var(--panel-3);
+}
+.ag-rel {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+  min-width: 34px;
+}
+.ag-day.is-today .ag-rel {
+  color: var(--moss-deep);
+}
+.ag-full {
+  font-size: 11px;
+  color: var(--ink-4);
+  font-family: var(--mono);
+}
+.ag-head .ag-n {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--ink-4);
+  font-family: var(--mono);
+}
+.ag-list {
+  padding: 4px;
+}
+
+/* ---------------------------------------------------------------- 日程行 */
+
+.sched-list {
+  display: grid;
+  gap: 3px;
+}
+.sched-list.compact {
+  gap: 2px;
+}
+.sched-daysep {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--ink-4);
+  padding: 8px 2px 2px;
+}
+
+.sched-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  border-left: 3px solid var(--sc, #6e8163);
+  background: var(--sc-soft, rgba(110, 129, 99, 0.12));
+  text-align: left;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  cursor: pointer;
+}
+.sched-row:hover {
+  box-shadow: var(--shadow-1);
+}
+.sched-row.active {
+  border-color: var(--moss-line);
+  border-left-color: var(--sc, #6e8163);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+}
+.sched-row.done .sr-title {
+  text-decoration: line-through;
+  color: var(--ink-4);
+}
+
+.done-circle {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1.5px solid var(--sc, var(--moss-line));
+  background: var(--panel);
+  color: transparent;
+  font-size: 10px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  transition: all 0.12s ease;
+}
+.done-circle:hover {
+  border-color: var(--moss);
+  color: var(--moss);
+}
+.done-circle.on {
+  background: var(--sc, var(--moss));
+  border-color: var(--sc, var(--moss));
+  color: #fff;
+}
+.done-circle.small {
+  width: 15px;
+  height: 15px;
+  position: absolute;
+  right: 8px;
+  top: 9px;
+  margin-top: 0;
+}
+
+.sr-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sr-line1 {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.sr-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  flex: 0 0 auto;
+}
+.sr-title {
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sr-sub {
+  font-size: 10.5px;
+  color: var(--ink-4);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+.sr-conflict {
+  font-size: 10.5px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-top: 4px;
+  display: inline-block;
+}
+.sr-acts {
+  display: flex;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+.sr-acts button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-3);
+}
+.sr-acts button:hover {
+  border-color: var(--moss-line);
+  color: var(--moss-deep);
+  background: var(--moss-soft);
+}
+
+/* ------------------------------------------------------------ 右栏：日历 */
+
+.detail-inner.cal-detail {
+  padding-top: 4px;
+}
+.detail-inner.cal-detail .d-title {
+  font-size: 22px;
+  margin-bottom: 4px;
+}
+.cal-sub {
+  font-size: 12px;
+  color: var(--ink-4);
+  margin-bottom: 18px;
+}
+.cal-empty {
+  text-align: center;
+  padding: 34px 12px;
+  color: var(--ink-4);
+  font-size: 12.5px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+}
+.cal-empty p {
+  margin-bottom: 12px;
+}
+.cal-detail .d-section {
+  margin-top: 24px;
+}
+.cal-detail .d-section > h4 {
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  margin-bottom: 9px;
+  font-weight: 500;
+}
+
+.color-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--sc-soft, var(--panel-3));
+  color: var(--ink-2);
+  border: 1px solid var(--sc, var(--line));
+}
+.color-badge::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sc, var(--ink-4));
+}
+
+.color-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.color-dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--sc, var(--panel-3));
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+  transition: all 0.12s ease;
+}
+.color-dot:hover {
+  transform: translateY(-1px);
+}
+.color-dot.on {
+  border-color: var(--ink-2);
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--sc, var(--moss-line));
+}
+.color-dot.auto {
+  width: auto;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 20px;
+  background: var(--panel-3);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  border: 1px solid var(--line);
+}
+.color-dot.auto.on {
+  border-color: var(--moss);
+  color: var(--moss-deep);
+  background: var(--moss-soft);
+  box-shadow: none;
+}
+
+.time-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.time-row input[type='time'] {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.time-row .dash {
+  color: var(--ink-4);
+}
+.repeat-row {
+  display: flex;
+  gap: 6px;
+}
+.repeat-row select {
+  flex: 2 1 0;
+  min-width: 0;
+}
+.repeat-row input[type='date'] {
+  flex: 3 1 0;
+  min-width: 0;
+}
+.field textarea.sched-note {
+  min-height: 150px;
+}
+
+/* 关联资料选择器 */
+.link-picker {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: 8px 9px;
+}
+.link-picker:focus-within {
+  border-color: var(--moss-line);
+}
+.lp-chips {
+  margin-top: 0;
+  margin-bottom: 6px;
+}
+.lp-chips .mini-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.lp-chips .mini-tag button {
+  color: var(--moss-deep);
+  opacity: 0.55;
+  font-size: 11px;
+  line-height: 1;
+}
+.lp-chips .mini-tag button:hover {
+  opacity: 1;
+}
+.lp-hint {
+  font-size: 11px;
+  color: var(--ink-4);
+}
+.lp-search {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  outline: none;
+  margin-bottom: 6px;
+}
+.lp-search:focus {
+  border-color: var(--moss-line);
+}
+.lp-list {
+  max-height: 190px;
+  overflow-y: auto;
+  display: grid;
+  gap: 1px;
+}
+.lp-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--ink-2);
+  text-align: left;
+}
+.lp-row:hover {
+  background: var(--panel-2);
+}
+.lp-row.on {
+  background: var(--moss-soft);
+  color: var(--moss-deep);
+}
+.lp-check {
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--moss-deep);
+  flex: 0 0 auto;
+}
+.lp-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lp-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-4);
+  flex: 0 0 auto;
+}
+
+/* 关联资料卡片 */
+.link-cards {
+  display: grid;
+  gap: 6px;
+}
+.link-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-soft);
+  background: var(--panel-2);
+  text-align: left;
+  transition: all 0.12s ease;
+}
+.link-card:hover {
+  border-color: var(--moss-line);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+}
+.lc-badge {
+  font-size: 9.5px;
+  font-family: var(--mono);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--panel-3);
+  color: var(--ink-3);
+  flex: 0 0 auto;
+}
+.lc-main {
+  min-width: 0;
+  display: block;
+}
+.lc-title {
+  display: block;
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lc-sub {
+  display: block;
+  font-size: 10.5px;
+  color: var(--ink-4);
+  font-family: var(--mono);
+  margin-top: 1px;
+}
+
+/* 中栏列表里的日程卡片 */
+.card.sched-card .sched-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  margin-top: 3px;
+}
+.card.sched-card .sched-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.card.sched-card.done h3 {
+  text-decoration: line-through;
+  color: var(--ink-4);
+}
+.type-badge.sched {
+  background: var(--moss-soft);
+  color: var(--moss-deep);
+}
+
+/* -------------------------------------------------------------- 提醒条 */
+
+.remind-bar {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 250;
+  max-width: min(760px, calc(100vw - 60px));
+}
+.rb-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px 8px 14px;
+  border-radius: 22px;
+  background: var(--ink);
+  color: #f7f4ec;
+  box-shadow: var(--shadow-3);
+  animation: toastIn 0.2s ease;
+}
+.rb-ico {
+  font-size: 14px;
+}
+.rb-text {
+  font-size: 12.5px;
+  margin-right: 2px;
+}
+.rb-item {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: #f7f4ec;
+  background: rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rb-item:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.rb-close {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  margin-left: 2px;
+}
+.rb-close:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+/* 两栏收起时日历工具条也要能收干净 */
+.app.list-collapsed .list-pane > *:not(.rail-btn) {
+  display: none !important;
+}
+

@@ -10,7 +10,15 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { ArchiveStore } = require('../src/main/store');
-const { LibraryService } = require('../src/main/library');
+const { LibraryService, buildMarkdown } = require('../src/main/library');
+const {
+  occurrenceStarts,
+  occurrencesInRange,
+  occurrencesOn,
+  conflictsIn,
+  splitPayload,
+  repeatWithout,
+} = require('../src/renderer/schedule');
 
 let pass = 0;
 let fail = 0;
@@ -321,6 +329,310 @@ function section(t) {
   );
   ok(!fs.existsSync(path.join(blockedDir, 'archive.json.tmp')), '残留的 .tmp 被清掉');
   ok(fs.existsSync(path.join(blockedDir, 'archive.json.bak')), '.bak 仍然保留');
+
+  // ==========================================================================
+  // 日历与日程
+  // ==========================================================================
+
+  const calStore = new ArchiveStore(path.join(root, 'cal-lib'));
+  await calStore.load();
+
+  section('16. 日程：新建与查询');
+  const hostEntry = await calStore.create({
+    type: 'text',
+    title: '教学组例会纪要',
+    content: '会议要点：督导听课每周不少于两次。',
+    date: '2026-09-23',
+    category: '工作资料',
+    tags: ['教学'],
+  });
+  const meet = await calStore.createSchedule({
+    title: '教学组例会',
+    date: '2026-09-23',
+    start: '10:00',
+    end: '11:30',
+    location: '三楼会议室',
+    category: '工作资料',
+    tags: ['教学', '会议'],
+    links: [hostEntry.id],
+    remind: 15,
+  });
+  // 沿用既有约定：资料是 e + hex、附件是 a + hex，日程就是 s + hex（首字母区分，不会撞）
+  ok(/^s[0-9a-f]+$/.test(meet.id), '日程 id 以 s 开头（与资料的 e 区分）', meet.id);
+  ok(calStore.getSchedule(meet.id) !== null, '日程可以按 id 查到');
+  ok(calStore.data.schedules.length === 1, '日程写进同一个 archive.json');
+  ok(calStore.stats().schedules.total === 1, 'stats 里含日程计数');
+  ok(calStore.data.categories.includes('工作资料'), '日程用到的分类自动登记');
+  ok(meet.links.length === 1 && meet.links[0] === hostEntry.id, '关联资料已保存');
+  ok(meet.remind === 15, '提醒分钟数已保存');
+  ok(calStore.data.version === 2, 'ARCHIVE_VERSION 升到 2');
+
+  section('17. 日程编辑 / 全天 / 脏数据归一化');
+  await calStore.updateSchedule(meet.id, { title: '教学组例会（周会）', remind: 30 });
+  ok(calStore.getSchedule(meet.id).title === '教学组例会（周会）', '日程标题可更新');
+  ok(calStore.getSchedule(meet.id).remind === 30, '提醒时间可更新');
+
+  const trip = await calStore.createSchedule({
+    title: '外出调研',
+    date: '2026-09-28',
+    endDate: '2026-09-30',
+    allDay: true,
+    start: '08:00',
+    end: '09:00',
+  });
+  ok(trip.allDay === true && trip.start === '' && trip.end === '', '全天日程忽略填进来的时间');
+  ok(trip.endDate === '2026-09-30', '跨天日程保留结束日期');
+
+  const dirty = await calStore.createSchedule({
+    title: '脏数据',
+    date: '不是日期',
+    endDate: '2026-01-01',
+    remind: 'abc',
+    color: '紫色',
+    repeat: { freq: '每周' },
+  });
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(dirty.date), '非法日期回落到今天', dirty.date);
+  ok(dirty.endDate === null, '结束日期早于开始日期时被丢弃');
+  ok(dirty.remind === null, '非法提醒值被丢弃');
+  ok(dirty.color === '', '非法色标被丢弃');
+  ok(dirty.repeat.freq === 'none', '非法重复频率回落到不重复');
+  await calStore.removeSchedulesForever([dirty.id]);
+
+  section('18. 重复规则展开（只存规则，不预生成实例）');
+  const weekly = await calStore.createSchedule({
+    title: '每周督导会',
+    date: '2026-09-01',
+    start: '09:00',
+    repeat: { freq: 'weekly', count: 4 },
+  });
+  const weeklyStarts = occurrenceStarts(weekly, '2026-08-01', '2026-12-31');
+  ok(weeklyStarts.length === 4, '每周 + count=4 展开 4 次', weeklyStarts.join(','));
+  ok(weeklyStarts.join(',') === '2026-09-01,2026-09-08,2026-09-15,2026-09-22', '每周按 7 天递推');
+  ok(calStore.data.schedules.filter((s) => s.repeat.freq === 'weekly').length === 1, '重复规则只有一条记录，没有塞 1000 条实例');
+
+  const monthly = await calStore.createSchedule({
+    title: '月末结账',
+    date: '2026-01-31',
+    repeat: { freq: 'monthly', until: '2026-04-30' },
+  });
+  ok(
+    occurrenceStarts(monthly, '2026-01-01', '2026-12-31').join(',') ===
+      '2026-01-31,2026-02-28,2026-03-31,2026-04-30',
+    '每月重复遇到 31 号自动钳到月末，且不会「越跑越早」'
+  );
+
+  const yearly = await calStore.createSchedule({
+    title: '周年',
+    date: '2024-02-29',
+    repeat: { freq: 'yearly' },
+  });
+  ok(
+    occurrenceStarts(yearly, '2024-01-01', '2028-12-31').join(',') ===
+      '2024-02-29,2025-02-28,2026-02-28,2027-02-28,2028-02-29',
+    '每年重复：2/29 在平年落到 2/28，闰年回到 2/29'
+  );
+
+  const daily = await calStore.createSchedule({
+    title: '每日复盘',
+    date: '2026-09-01',
+    repeat: { freq: 'daily', until: '2026-09-05' },
+  });
+  const dailyStarts = occurrenceStarts(daily, '2026-09-01', '2026-09-30');
+  ok(dailyStarts.length === 5, '每天重复 + until 上限生效', dailyStarts.join(','));
+  ok(dailyStarts[4] === '2026-09-05', 'until 含端点那一天');
+
+  section('19. 跨天与按天展开');
+  const tripOcc = occurrencesInRange([trip], '2026-09-27', '2026-10-01');
+  ok(tripOcc.length === 3, '跨天日程覆盖 3 天', tripOcc.map((o) => o.date).join(','));
+  ok(tripOcc[0].spanStart && tripOcc[2].spanEnd, '首尾标记正确（月视图据此画连续色条）');
+  ok(!tripOcc[1].spanStart && !tripOcc[1].spanEnd, '中间那天两头都不封口');
+  ok(occurrencesOn(calStore.listSchedules(), '2026-09-28').length === 1, '按天查询只返回当天命中的');
+  ok(
+    occurrencesOn(calStore.listSchedules(), '2026-09-23')[0].schedule.title === '教学组例会（周会）',
+    '按天查询拿到的是改名后的日程'
+  );
+
+  section('20. 时间冲突检测');
+  const cA = await calStore.createSchedule({ title: 'A', date: '2026-10-01', start: '10:00', end: '11:30' });
+  const cB = await calStore.createSchedule({ title: 'B', date: '2026-10-01', start: '11:00', end: '12:00' });
+  const cC = await calStore.createSchedule({ title: 'C', date: '2026-10-01', start: '11:31', end: '12:30' });
+  const conflicts = conflictsIn(occurrencesOn(calStore.listSchedules(), '2026-10-01'));
+  ok(Object.keys(conflicts).length === 3, 'A↔B、B↔C 各算一次冲突', JSON.stringify(Object.keys(conflicts)));
+  ok(conflicts[`${cB.id}@2026-10-01`].sort().join(',') === 'A,C', '中间的 B 与两边都冲突');
+  ok(!conflicts[`${cA.id}@2026-10-01`].includes('C'), 'A（到 11:30）与 C（11:31 起）不算冲突');
+  ok(conflictsIn([]).constructor === Object, '空列表返回空映射，不炸');
+  await calStore.removeSchedulesForever([cA.id, cB.id, cC.id]);
+
+  section('21. 日程回收站');
+  await calStore.trashSchedules([meet.id]);
+  ok(calStore.stats().schedules.trashed === 1, '日程软删除后进入回收站计数');
+  ok(calStore.listSchedules().every((s) => s.id !== meet.id), '默认列表不含回收站日程');
+  ok(calStore.listSchedules({ includeDeleted: true }).some((s) => s.id === meet.id), '可查询回收站里的日程');
+  await calStore.restoreSchedules([meet.id]);
+  ok(calStore.stats().schedules.trashed === 0, '日程还原成功');
+  ok(calStore.getSchedule(meet.id).deleted === false, '还原后 deleted 复位');
+  await calStore.trashSchedules([meet.id]);
+  await calStore.removeSchedulesForever([meet.id]);
+  ok(calStore.getSchedule(meet.id) === null, '日程彻底删除');
+
+  section('22. 资料被彻底删除后，日程里的悬空关联要清掉');
+  const doomed = await calStore.create({ type: 'text', title: '要被删掉的资料' });
+  const refSched = await calStore.createSchedule({
+    title: '引用这条资料的日程',
+    date: '2026-10-02',
+    links: [doomed.id],
+  });
+  ok(calStore.getSchedule(refSched.id).links.length === 1, '关联建立');
+  await calStore.trash([doomed.id]);
+  await calStore.removeForever([doomed.id]);
+  ok(calStore.getSchedule(refSched.id).links.length === 0, '资料彻底删除后不留悬空 id');
+
+  section('23. 拆「只改这一次」');
+  const series = await calStore.createSchedule({
+    title: '每周例会',
+    date: '2026-11-02',
+    repeat: { freq: 'weekly' },
+  });
+  const split = await calStore.createSchedule(splitPayload(series, '2026-11-09'));
+  await calStore.updateSchedule(series.id, { repeat: repeatWithout(series.repeat, '2026-11-09') });
+  const afterSplit = occurrenceStarts(calStore.getSchedule(series.id), '2026-11-01', '2026-12-01');
+  ok(!afterSplit.includes('2026-11-09'), '原重复日程跳过被拆走的那一天', afterSplit.join(','));
+  ok(afterSplit.includes('2026-11-16'), '其余各次不受影响');
+  ok(split.repeat.freq === 'none' && split.repeatOf === series.id, '拆出来的是一条独立日程，并指回原日程');
+  ok(split.date === '2026-11-09' && split.title === '每周例会', '拆出来的日程带着原来那次的日期与标题');
+
+  section('24. 导出 .ics');
+  // 前面的用例把带提醒的那条日程删掉了，这里重新造一条，专门验提醒有没有带进 VALARM
+  const icsRemind = await calStore.createSchedule({
+    title: '带提醒的日程',
+    date: '2026-11-20',
+    start: '09:00',
+    end: '10:00',
+    remind: 15,
+  });
+  const icsPath = path.join(root, 'out', '日程.ics');
+  const icsOut = await lib.exportIcs(calStore.listSchedules(), icsPath, { range: 'all' });
+  const icsText = await fsp.readFile(icsPath, 'utf8');
+  ok(fs.existsSync(icsPath), '.ics 文件已生成');
+  ok(icsText.startsWith('BEGIN:VCALENDAR') && icsText.includes('END:VCALENDAR'), 'iCalendar 结构完整');
+  ok(/DTSTART;VALUE=DATE:\d{8}/.test(icsText), '全天日程用 VALUE=DATE 形式');
+  ok(/DTEND;VALUE=DATE:\d{8}/.test(icsText), '全天日程的结束日期是次日（iCalendar 的排他约定）');
+  ok(/DTSTART:\d{8}T\d{6}/.test(icsText), '定时日程用本地时间形式');
+  ok(icsText.includes('TRIGGER:-PT15M'), '提醒设置随事件带进 VALARM');
+  ok(icsText.includes(`UID:${icsRemind.id}-2026-11-20@my-life`), '每个事件的 UID 稳定可追溯');
+  ok(icsText.includes('SUMMARY:'), '每个事件都有标题');
+  ok(icsOut.events > 0 && icsOut.events >= icsOut.schedules, '展开出的 VEVENT 数量合理', JSON.stringify(icsOut));
+  let icsThrew = false;
+  try {
+    await lib.exportIcs([], path.join(root, 'out', '空.ics'));
+  } catch {
+    icsThrew = true;
+  }
+  ok(icsThrew, '没有日程时导出直接报错，不生成空文件');
+
+  section('25. 导出 Markdown 附带相关日程');
+  const mdHost = await calStore.create({
+    type: 'text',
+    title: '带日程的资料',
+    content: '正文内容',
+    date: '2026-12-01',
+  });
+  const mdSched = await calStore.createSchedule({
+    title: '跟这条资料有关的会',
+    date: '2026-12-01',
+    start: '14:00',
+    end: '15:00',
+    links: [mdHost.id],
+    tags: ['会议'],
+  });
+  const plainMd = buildMarkdown([mdHost]);
+  ok(!plainMd.includes('相关日程'), '不勾选时不会多出「相关日程」段落');
+  const richMd = buildMarkdown([mdHost], { includeSchedules: true, schedules: calStore.listSchedules() });
+  ok(richMd.includes('### 相关日程'), '勾选后多出「相关日程」段落');
+  ok(richMd.includes('跟这条资料有关的会'), '段落里含日程标题');
+  ok(richMd.includes('14:00–15:00'), '段落里含时间段');
+
+  section('26. 备份 / 恢复要带上日程');
+  const calZip = path.join(root, 'cal-备份.zip');
+  await lib.createBackup(calZip, calStore);
+  const schedBefore = calStore.listSchedules().length;
+  const schedTitlesBefore = calStore
+    .listSchedules()
+    .map((s) => s.title)
+    .sort()
+    .join('|');
+  await calStore.createSchedule({ title: '备份之后才建的日程', date: '2026-12-31' });
+  await calStore.trashSchedules([mdSched.id]);
+  const calInfo = await lib.inspectBackup(calZip);
+  ok((calInfo.data.schedules || []).length === schedBefore, '备份里含日程', String(schedBefore));
+  const calRestored = await lib.restoreBackup(calZip, calStore);
+  ok(calRestored.schedules === schedBefore, '恢复后日程条数回到备份时', String(calRestored.schedules));
+  ok(
+    calStore
+      .listSchedules()
+      .map((s) => s.title)
+      .sort()
+      .join('|') === schedTitlesBefore,
+    '恢复后每条日程与备份时完全一致'
+  );
+  ok(
+    !calStore.listSchedules().some((s) => s.title === '备份之后才建的日程'),
+    '备份之后新建的日程被覆盖掉'
+  );
+  ok(calStore.getSchedule(mdSched.id).deleted === false, '被移到回收站的日程恢复后回来了');
+
+  section('27. 清空回收站要连日程一起清');
+  await calStore.trashSchedules([mdSched.id]);
+  const emptied = await calStore.emptyTrash();
+  ok(emptied >= 1, '清空回收站返回清掉的总条数（资料 + 日程）', String(emptied));
+  ok(calStore.getSchedule(mdSched.id) === null, '日程被彻底删除');
+  ok(calStore.getSchedule(refSched.id) !== null, '没进回收站的日程不受影响');
+  ok(calStore.stats().schedules.trashed === 0, '回收站里的日程清空后计数归零');
+
+  section('28. 标签体系是资料与日程共用的');
+  await calStore.create({ type: 'text', title: '带标签的资料', tags: ['共标签'] });
+  await calStore.createSchedule({ title: '带标签的日程', date: '2026-12-05', tags: ['共标签'] });
+  const tagStat = calStore.stats().tags.find((t) => t.name === '共标签');
+  ok(tagStat && tagStat.count === 2, '同一标签在资料与日程上合并计数', JSON.stringify(tagStat));
+  ok(calStore.stats().schedules.repeating >= 1, 'stats 里统计了重复日程的条数');
+
+  section('29. 老版本 archive.json（没有 schedules 字段）');
+  const oldDir = path.join(root, 'old-lib');
+  await fsp.mkdir(path.join(oldDir, 'attachments'), { recursive: true });
+  await fsp.writeFile(
+    path.join(oldDir, 'archive.json'),
+    JSON.stringify({
+      version: 1,
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+      categories: ['经历'],
+      entries: [
+        {
+          id: 'e1',
+          type: 'text',
+          title: '旧资料',
+          content: '本文件里根本没有 schedules 字段。',
+          date: '2026-09-01',
+          category: '经历',
+          tags: [],
+          attachments: [],
+          createdAt: '2026-09-01T00:00:00.000Z',
+          updatedAt: '2026-09-01T00:00:00.000Z',
+          deleted: false,
+        },
+      ],
+    }),
+    'utf8'
+  );
+  const oldStore = new ArchiveStore(oldDir);
+  await oldStore.load();
+  ok(Array.isArray(oldStore.data.schedules) && oldStore.data.schedules.length === 0, '老文件读入后 schedules 归一化成空数组');
+  ok(oldStore.data.entries.length === 1, '老资料一条都没丢');
+  ok(oldStore.data.version === 2, '内存里的版本号已升到 2');
+  const oldNew = await oldStore.createSchedule({ title: '在老资料库上新建的日程', date: '2026-10-10' });
+  const oldRaw = JSON.parse(await fsp.readFile(path.join(oldDir, 'archive.json'), 'utf8'));
+  ok(oldRaw.schedules.length === 1 && oldRaw.schedules[0].id === oldNew.id, '新日程正常写回老档案文件');
+  ok(oldRaw.entries.length === 1, '写回时没有破坏原有资料');
 
   await fsp.rm(root, { recursive: true, force: true });
 

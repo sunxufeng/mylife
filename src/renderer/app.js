@@ -26,13 +26,33 @@ const SORTS = [
 
 const state = {
   entries: [],
-  stats: { total: 0, trashed: 0, byCategory: {}, byType: {}, tags: [], categories: [], attachments: 0, bytes: 0 },
+  schedules: [],
+  stats: {
+    total: 0,
+    trashed: 0,
+    byCategory: {},
+    byType: {},
+    tags: [],
+    categories: [],
+    attachments: 0,
+    bytes: 0,
+    schedules: { total: 0, trashed: 0, done: 0, repeating: 0 },
+  },
   appInfo: null,
   libraryPath: '',
-  prefs: { theme: 'sage', sidebarCollapsed: false, listCollapsed: false, mdPreview: true, lastFormat: '' },
+  prefs: {
+    theme: 'sage',
+    sidebarCollapsed: false,
+    listCollapsed: false,
+    mdPreview: true,
+    lastFormat: '',
+    notify: true,
+    calView: 'month',
+    calRange: 30,
+  },
   migratedFrom: null,
   focusMode: false,
-  view: 'all', // all | trash | cat:<name> | tag:<name>
+  view: 'all', // all | trash | calendar | cat:<name> | tag:<name>
   q: '',
   filterType: '',
   filterTag: '',
@@ -42,6 +62,16 @@ const state = {
   checked: new Set(),
   editing: null,
   lastVisible: [],
+  // ---- 日历 ----
+  calCursor: '', // 当前显示的月份（用该月里任意一天表示）
+  calSelectedDate: '', // 右栏正在看的那一天
+  calView: 'month', // month | agenda
+  calRange: 30, // 议程视图看多少天
+  selectedScheduleId: null,
+  scheduleEditing: null,
+  expandedAgendaDays: new Set(), // 议程视图里展开「明天以后」的分组
+  reminders: [], // 提醒条上的日程
+  pendingSplitDate: '', // 「只改这一次」时记住原来那次是哪天
 };
 
 /* ---------------------------------------------------------------- 小工具 */
@@ -72,6 +102,8 @@ function humanSize(bytes) {
   return (n / 1073741824).toFixed(2) + ' GB';
 }
 
+/** 今天的日期（YYYY-MM-DD）。注意：schedule.js 里也有同名函数，脚本先加载它、
+ *  这里再声明会覆盖掉；两者在「不传参」时结果一致，日历那边只按无参调用，所以无碍。 */
 function todayStr() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
@@ -239,7 +271,8 @@ function confirmDialog({ title, message, detail, okLabel = '确定', danger = fa
 
 function applySnapshot(res) {
   if (res.entries) state.entries = res.entries;
-  if (res.stats) state.stats = res.stats;
+  if (res.schedules) state.schedules = res.schedules;
+  if (res.stats) state.stats = { ...state.stats, ...res.stats };
   if (res.libraryPath) state.libraryPath = res.libraryPath;
   if (res.appInfo) state.appInfo = res.appInfo;
   if (res.prefs) state.prefs = { ...state.prefs, ...res.prefs };
@@ -341,20 +374,32 @@ function renderSidebar() {
 
   const nav = $('#navMain');
   nav.innerHTML = '';
-  const mk = (view, icon, label, count) => {
+  const mk = (view, icon, label, count, extra) => {
     const b = el('button', 'nav-item' + (state.view === view ? ' active' : ''));
-    b.innerHTML = `<span class="ico">${icon}</span><span>${esc(label)}</span><span class="count">${count}</span>`;
+    b.innerHTML =
+      `<span class="ico">${icon}</span><span>${esc(label)}</span>` +
+      (extra ? `<span class="pin">${extra}</span>` : '') +
+      `<span class="count">${count}</span>`;
     b.onclick = () => {
-      state.view = view;
-      state.checked.clear();
-      state.selectedId = null;
-      state.editing = null;
-      renderAll();
+      if (view === 'calendar') gotoCalendar();
+      else {
+        abandonEditing();
+        state.view = view;
+        state.checked.clear();
+        state.selectedId = null;
+        state.editing = null;
+        state.selectedScheduleId = null;
+        state.scheduleEditing = null;
+        renderAll();
+      }
     };
     nav.appendChild(b);
   };
+
+  const todayN = todayOccurrences().length;
+  mk('calendar', '▦', '日历', todayN ? `${todayN} 今日` : '', '');
   mk('all', '▤', '全部资料', st.total);
-  mk('trash', '🗑', '回收站', st.trashed);
+  mk('trash', '🗑', '回收站', st.trashed + (st.schedules ? st.schedules.trashed : 0));
 
   // 分类：全部列出来（空分类也保留，否则刚建完分类会「消失」让人困惑）
   const cl = $('#categoryList');
@@ -385,10 +430,13 @@ function renderSidebar() {
     const b = el('button', 'tag-chip' + (state.view === 'tag:' + t.name ? ' active' : ''));
     b.innerHTML = esc(t.name) + `<span class="n">${t.count}</span>`;
     b.onclick = () => {
+      abandonEditing();
       state.view = state.view === 'tag:' + t.name ? 'all' : 'tag:' + t.name;
       state.filterTag = '';
       state.selectedId = null;
       state.editing = null;
+      state.selectedScheduleId = null;
+      state.scheduleEditing = null;
       renderAll();
     };
     tc.appendChild(b);
@@ -416,10 +464,13 @@ function catRow(name, count, label) {
     row.appendChild(edit);
   }
   row.onclick = () => {
+    abandonEditing();
     state.view = state.view === viewId ? 'all' : viewId;
     state.checked.clear();
     state.selectedId = null;
     state.editing = null;
+    state.selectedScheduleId = null;
+    state.scheduleEditing = null;
     renderAll();
   };
   return row;
@@ -517,20 +568,44 @@ function renderListControls() {
   if ($('#searchInput').value !== state.q) $('#searchInput').value = state.q;
 }
 
+/** 中栏在「列表模式 / 日历模式」之间切换外观 */
+function setPaneMode() {
+  const cal = state.view === 'calendar';
+  const app = $('#app');
+  if (app) app.classList.toggle('cal-mode', cal);
+  const head = $('#calHead');
+  if (head) head.classList.toggle('hidden', !cal);
+  const lh = $('#listHead');
+  if (lh) lh.classList.toggle('cal-mode', cal);
+  const sb = $('#listScroll');
+  if (sb) sb.classList.toggle('cal-scroll', cal);
+  const si = $('#searchInput');
+  if (si) si.placeholder = cal ? '搜索日程：标题、地点、备注、标签…' : '搜索标题、正文、来源、标签…';
+}
+
 function renderList() {
+  setPaneMode();
+  if (state.view === 'calendar') return renderCalendar();
+
   const list = currentList();
   state.lastVisible = list;
   const scroll = $('#listScroll');
   scroll.innerHTML = '';
 
   const inTrash = state.view === 'trash';
-  $('#listCount').textContent = `${list.length} 条${state.view === 'trash' ? '（回收站）' : ''}`;
+  const extra = state.view.startsWith('cat:') || state.view.startsWith('tag:') ? schedulesInCurrentScope() : [];
+  const trashedSchedules = inTrash ? state.schedules.filter((s) => s.deleted) : [];
+
+  $('#listCount').textContent =
+    `${list.length} 条` +
+    (extra.length ? ` · 日程 ${extra.length} 条` : '') +
+    (state.view === 'trash' ? '（回收站）' : '');
   $('#btnBulkRestore').classList.toggle('hidden', !inTrash);
   $('#btnBulkDelete').classList.toggle('hidden', !inTrash);
   $('#btnBulkTrash').classList.toggle('hidden', inTrash);
-  $('#btnEmptyTrash').classList.toggle('hidden', !inTrash || !state.stats.trashed);
+  $('#btnEmptyTrash').classList.toggle('hidden', !inTrash || !(state.stats.trashed + state.stats.schedules.trashed));
 
-  if (!list.length) {
+  if (!list.length && !extra.length && !trashedSchedules.length) {
     let tip = '这里还空着。';
     if (inTrash) tip = '回收站是空的。';
     else if (state.q) tip = '没有匹配的资料，换个关键词试试。';
@@ -544,6 +619,34 @@ function renderList() {
       box.appendChild(b);
     }
     scroll.appendChild(box);
+    renderBulk();
+    return;
+  }
+
+  if (inTrash) {
+    // 回收站分两组：资料 / 日程
+    if (list.length) {
+      scroll.appendChild(el('div', 'group-head', `资料 · ${list.length}`));
+      for (const e of list) scroll.appendChild(renderCard(e, true));
+    }
+    if (trashedSchedules.length) {
+      scroll.appendChild(el('div', 'group-head', `日程 · ${trashedSchedules.length}`));
+      for (const s of trashedSchedules) {
+        scroll.appendChild(
+          scheduleRow(
+            {
+              schedule: s,
+              key: s.id,
+              date: s.date,
+              startDate: s.date,
+              endDate: s.endDate || s.date,
+              days: s.endDate && s.endDate > s.date ? 2 : 1,
+            },
+            { inTrash: true }
+          )
+        );
+      }
+    }
     renderBulk();
     return;
   }
@@ -564,7 +667,34 @@ function renderList() {
     }
     scroll.appendChild(renderCard(e, inTrash));
   }
+
+  // 分类 / 标签视图里，把日程接在后面，形成「同一主题下的资料与安排」
+  if (extra.length) {
+    scroll.appendChild(el('div', 'group-head', `日程 · ${extra.length}`));
+    const seen = new Set();
+    for (const s of extra) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      scroll.appendChild(renderScheduleCard({ schedule: s, key: s.id, date: s.date }));
+    }
+  }
   renderBulk();
+}
+
+/** 当前分类 / 标签范围内命中的日程 */
+function schedulesInCurrentScope() {
+  let list = state.schedules.filter((s) => !s.deleted);
+  if (state.view.startsWith('cat:')) {
+    const c = state.view.slice(4);
+    list = c === '__none__' ? list.filter((s) => !s.category) : list.filter((s) => s.category === c);
+  } else if (state.view.startsWith('tag:')) {
+    const t = state.view.slice(4);
+    list = list.filter((s) => s.tags.includes(t));
+  }
+  if (state.q && state.view.startsWith('tag:')) {
+    list = list.filter((s) => matchScheduleQuery(s, state.q));
+  }
+  return list.sort((a, b) => String(a.date).localeCompare(String(b.date)));
 }
 
 function renderCard(e, inTrash) {
@@ -632,9 +762,96 @@ function renderCard(e, inTrash) {
   card.onclick = () => {
     state.selectedId = e.id;
     state.editing = null;
+    state.selectedScheduleId = null;
+    state.scheduleEditing = null;
     renderList();
     renderDetail();
   };
+  return card;
+}
+
+/** 中栏列表里的日程卡片（分类 / 标签视图、回收站里用） */
+function renderScheduleCard(o, { inTrash = false } = {}) {
+  const s = o.schedule;
+  const card = el('div', 'card sched-card c-' + colorOf(s) +
+    (state.selectedScheduleId === s.id ? ' active' : '') + (s.done ? ' done' : ''));
+
+  const top = el('div', 'card-top');
+  top.appendChild(el('span', 'type-badge sched', inTrash ? '回收站' : '日程'));
+  top.appendChild(el('span', 'date', s.endDate ? `${s.date} → ${s.endDate}` : s.date || ''));
+  card.appendChild(top);
+
+  const h3 = el('h3');
+  h3.innerHTML = hl(s.title, state.q);
+  card.appendChild(h3);
+
+  const meta = el('div', 'sched-line');
+  meta.appendChild(el('span', 'sched-time', fmtTime(s)));
+  if (s.location) meta.appendChild(el('span', null, s.location));
+  const rep = repeatDesc(s.repeat);
+  if (rep) meta.appendChild(el('span', null, rep));
+  card.appendChild(meta);
+
+  if (s.tags && s.tags.length) {
+    const tg = el('div', 'card-tags');
+    s.tags.slice(0, 4).forEach((t) => tg.appendChild(el('span', 'mini-tag', t)));
+    card.appendChild(tg);
+  }
+
+  const foot = el('div', 'card-foot');
+  if (s.links && s.links.length) foot.appendChild(el('span', 'clip', `关联 ${s.links.length}`));
+  foot.appendChild(el('span', null, inTrash && s.deletedAt ? '删除于 ' + relTime(s.deletedAt) : relTime(s.updatedAt)));
+  card.appendChild(foot);
+
+  if (!inTrash) {
+    const circle = el('button', 'done-circle small' + (s.done ? ' on' : ''), s.done ? '✓' : '');
+    circle.title = s.done ? '标记为未完成' : '标记为完成';
+    circle.onclick = (ev) => {
+      ev.stopPropagation();
+      toggleScheduleDone(s, o);
+    };
+    card.appendChild(circle);
+    card.onclick = () => {
+      state.view = 'calendar';
+      state.calCursor = s.date;
+      state.calSelectedDate = s.date;
+      state.selectedScheduleId = s.id;
+      state.selectedOccurrenceDate = o.date || s.date;
+      state.selectedId = null;
+      state.scheduleEditing = null;
+      renderAll();
+    };
+  } else {
+    const acts = el('div', 'sr-acts');
+    const back = el('button', null, '还原');
+    back.onclick = async (ev) => {
+      ev.stopPropagation();
+      const r = await act(API.restoreSchedules([s.id]), '日程已还原');
+      if (r) {
+        applySnapshot(r);
+        renderAll();
+      }
+    };
+    const gone = el('button', null, '彻底删除');
+    gone.onclick = async (ev) => {
+      ev.stopPropagation();
+      const ok = await confirmDialog({
+        title: '彻底删除这条日程？',
+        message: '删除后无法恢复。',
+        okLabel: '彻底删除',
+        danger: true,
+      });
+      if (!ok) return;
+      const r = await act(API.deleteSchedulesForever([s.id]));
+      if (r) {
+        applySnapshot(r);
+        if (state.selectedScheduleId === s.id) state.selectedScheduleId = null;
+        renderAll();
+      }
+    };
+    acts.append(back, gone);
+    card.appendChild(acts);
+  }
   return card;
 }
 
@@ -646,6 +863,1200 @@ function renderBulk() {
   const all = $('#checkAll');
   all.checked = vis > 0 && n === vis;
   all.indeterminate = n > 0 && n < vis;
+}
+
+/* ==========================================================================
+   日历与日程
+   ==========================================================================
+   说明：日期计算、重复规则展开、冲突检测、.ics 生成都在 schedule.js 里，
+   那边是纯函数、可单测；这里只负责把它们画出来和接上交互。
+   ========================================================================== */
+
+/** 正在被拖动的日程实例（HTML5 拖拽全程共用） */
+let draggingSchedule = null;
+
+function matchScheduleQuery(s, q) {
+  if (!q) return true;
+  const t = q.toLowerCase();
+  return (
+    (s.title || '').toLowerCase().includes(t) ||
+    (s.location || '').toLowerCase().includes(t) ||
+    (s.note || '').toLowerCase().includes(t) ||
+    (s.category || '').toLowerCase().includes(t) ||
+    (s.tags || []).some((x) => x.toLowerCase().includes(t))
+  );
+}
+
+/** 日历视图下，标签筛选与搜索都作用在日程上 */
+function matchesCalFilter(s) {
+  if (state.filterTag && !s.tags.includes(state.filterTag)) return false;
+  if (state.q && !matchScheduleQuery(s, state.q)) return false;
+  return true;
+}
+
+function todayOccurrences() {
+  return occurrencesOn(state.schedules, todayStr());
+}
+
+/** 「今天」「明天」这类相对词，只在这几天用 */
+const REL_WORDS = new Set(['今天', '明天', '后天', '昨天']);
+
+/**
+ * 列表里的一天该显示成什么：
+ * 今天 → 「今天 · 9 月 24 日 · 周四」；别的日子 → 「9 月 30 日 · 周三」
+ */
+function dayLabel(dateStr) {
+  const rel = fmtRelDay(dateStr);
+  return REL_WORDS.has(rel)
+    ? `${rel} · ${fmtDayTitle(dateStr)}`
+    : fmtDayTitle(dateStr);
+}
+
+/**
+ * 跨天日程在月视图里每天都画一条（连成一条色带），
+ * 但列成清单时只该出现一次 —— 按「日程 + 起始日」去重。
+ */
+function dedupeOccurrences(list) {
+  const seen = new Set();
+  return list.filter((o) => {
+    if (seen.has(o.key)) return false;
+    seen.add(o.key);
+    return true;
+  });
+}
+
+function gotoCalendar(opts = {}) {
+  abandonEditing();
+  state.view = 'calendar';
+  state.checked.clear();
+  state.editing = null;
+  if (!state.calCursor) state.calCursor = todayStr();
+  if (!state.calSelectedDate) state.calSelectedDate = todayStr();
+  if (opts.date) {
+    state.calCursor = opts.date;
+    state.calSelectedDate = opts.date;
+  }
+  state.selectedScheduleId = opts.scheduleId || null;
+  state.selectedOccurrenceDate = opts.date || '';
+  state.scheduleEditing = null;
+  state.reminders = [];
+  renderReminders();
+  renderAll();
+}
+
+/** 从中栏的任何位置跳到某条日程（关联资料、提醒条都用它） */
+function jumpToSchedule(id, date) {
+  const s = state.schedules.find((x) => x.id === id);
+  if (!s) return toast('这条日程已经不在资料库里了', 'err');
+  const day = date || s.date;
+  state.view = 'calendar';
+  state.calCursor = day;
+  state.calSelectedDate = day;
+  state.selectedScheduleId = id;
+  state.selectedOccurrenceDate = day;
+  state.scheduleEditing = null;
+  renderAll();
+}
+
+/* ---------------------------------------------------------------- 中栏 */
+
+function renderCalendar() {
+  const cal = state.calView || 'month';
+
+  // 周标题行（只在月视图有意义）
+  const week = $('#calWeek');
+  week.innerHTML = '';
+  week.classList.toggle('hidden', cal !== 'month');
+  ['一', '二', '三', '四', '五', '六', '日'].forEach((w) => week.appendChild(el('span', 'cal-wd', w)));
+
+  const start = state.calCursor || todayStr();
+  $('#calTitle').textContent =
+    cal === 'month'
+      ? fmtMonthTitle(state.calCursor)
+      : `${start === todayStr() ? '今天' : fmtMonthDay(start)}起 ${state.calRange} 天`;
+
+  const seg = $('#calViewSeg');
+  seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === cal));
+  const rs = $('#calRangeSeg');
+  rs.classList.toggle('hidden', cal !== 'agenda');
+  rs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.r) === state.calRange));
+
+  const scroll = $('#listScroll');
+  scroll.innerHTML = '';
+  if (cal === 'month') renderMonthGrid(scroll);
+  else renderAgenda(scroll);
+}
+
+function renderMonthGrid(container) {
+  const grid = monthGrid(state.calCursor);
+  const anchor = parseDate(state.calCursor) || new Date();
+  const monthIdx = anchor.getMonth();
+  const occs = occurrencesInRange(state.schedules, grid.start, grid.end).filter((o) =>
+    matchesCalFilter(o.schedule)
+  );
+  const byDay = new Map();
+  for (const o of occs) {
+    if (!byDay.has(o.date)) byDay.set(o.date, []);
+    byDay.get(o.date).push(o);
+  }
+
+  const today = todayStr();
+  const gridEl = el('div', 'cal-grid');
+  for (const day of grid.days) {
+    const d = parseDate(day);
+    const cell = el('div', 'cal-cell');
+    cell.dataset.date = day;
+    if (d.getMonth() !== monthIdx) cell.classList.add('out');
+    if (day === today) cell.classList.add('today');
+    if (day === state.calSelectedDate) cell.classList.add('sel');
+    if (d.getDay() === 0 || d.getDay() === 6) cell.classList.add('weekend');
+
+    const num = el('div', 'cal-daynum', String(d.getDate()));
+    cell.appendChild(num);
+
+    const items = byDay.get(day) || [];
+    const box = el('div', 'cal-chips');
+    const MAX = 2;
+    items.slice(0, MAX).forEach((o) => box.appendChild(calChip(o)));
+    if (items.length > MAX) {
+      const more = el('button', 'cal-more', `+${items.length - MAX}`);
+      more.title = items
+        .slice(MAX)
+        .map((o) => o.schedule.title)
+        .join('、');
+      more.onclick = (ev) => {
+        ev.stopPropagation();
+        state.calSelectedDate = day;
+        state.selectedScheduleId = null;
+        renderAll();
+      };
+      box.appendChild(more);
+    }
+    cell.appendChild(box);
+
+    cell.onclick = () => {
+      // 注意：这里刻意不整块重绘 —— 重绘会把格子换成新节点，
+      // 双击的第二下就落到别的节点上，dblclick 永远触发不了。
+      if (day === state.calSelectedDate && !state.selectedScheduleId) return;
+      selectDayInGrid(day);
+    };
+    cell.ondblclick = () => startNewSchedule(day);
+    cell.addEventListener('dragover', (e) => {
+      if (!draggingSchedule) return;
+      e.preventDefault();
+      cell.classList.add('drop-target');
+    });
+    cell.addEventListener('dragleave', () => cell.classList.remove('drop-target'));
+    cell.addEventListener('drop', (e) => {
+      e.preventDefault();
+      cell.classList.remove('drop-target');
+      onDropSchedule(day);
+    });
+    gridEl.appendChild(cell);
+  }
+  container.appendChild(gridEl);
+
+  const tip = el('div', 'cal-tip', '点一下选某天，双击空白格直接新建；把色条拖到别的日子就能改期。');
+  container.appendChild(tip);
+}
+
+function calChip(o) {
+  const s = o.schedule;
+  const chip = el('div', 'cal-chip c-' + colorOf(s) + (s.done ? ' done' : ''));
+  const st = hmToMin(s.start);
+  chip.title = `${s.allDay || st == null ? '全天' : minToHm(st)} ${s.title}${s.location ? ' · ' + s.location : ''}`;
+  chip.appendChild(el('span', 'chip-dot'));
+  if (!s.allDay && st != null && o.spanStart) chip.appendChild(el('span', 'chip-time', minToHm(st)));
+  chip.appendChild(el('span', 'chip-title', s.title));
+  if (o.days > 1) chip.classList.add(o.spanStart ? 'span-start' : 'span-mid');
+  chip.draggable = true;
+  chip.onclick = (ev) => {
+    ev.stopPropagation();
+    selectOccurrence(o);
+  };
+  chip.addEventListener('dragstart', (e) => {
+    draggingSchedule = o;
+    chip.classList.add('dragging');
+    try {
+      e.dataTransfer.setData('text/plain', o.key);
+    } catch {
+      /* 某些环境下不允许写 dataTransfer，忽略即可 */
+    }
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  chip.addEventListener('dragend', () => {
+    draggingSchedule = null;
+    chip.classList.remove('dragging');
+    document.querySelectorAll('.cal-cell.drop-target').forEach((c) => c.classList.remove('drop-target'));
+  });
+  return chip;
+}
+
+function renderAgenda(container) {
+  const start = state.calCursor || todayStr();
+  const end = addDays(start, state.calRange - 1);
+  const occs = dedupeOccurrences(
+    occurrencesInRange(state.schedules, start, end).filter((o) => matchesCalFilter(o.schedule))
+  );
+  const byDay = new Map();
+  for (const o of occs) {
+    if (!byDay.has(o.date)) byDay.set(o.date, []);
+    byDay.get(o.date).push(o);
+  }
+
+  const wrap = el('div', 'cal-agenda');
+  let shown = 0;
+  for (let i = 0; i < state.calRange; i++) {
+    const day = addDays(start, i);
+    const items = byDay.get(day) || [];
+    if (!items.length) continue;
+    shown++;
+    const rel = fmtRelDay(day);
+    const group = el('div', 'ag-day' + (day === todayStr() ? ' is-today' : ''));
+    const head = el('div', 'ag-head');
+    head.innerHTML =
+      `<span class="ag-rel">${esc(REL_WORDS.has(rel) ? rel : fmtMonthDay(day))}</span>` +
+      `<span class="ag-full">${esc(REL_WORDS.has(rel) ? fmtDayTitle(day) : '周' + WEEK_CN[weekdayOf(day)])}</span>` +
+      `<span class="ag-n">${items.length} 项</span>`;
+    head.onclick = () => {
+      state.calSelectedDate = day;
+      state.selectedScheduleId = null;
+      renderAll();
+    };
+    group.appendChild(head);
+    const list = el('div', 'ag-list');
+    const conflicts = conflictsIn(items);
+    for (const o of items) list.appendChild(scheduleRow(o, { conflicts }));
+    group.appendChild(list);
+    wrap.appendChild(group);
+  }
+
+  if (!shown) {
+    const box = el('div', 'empty');
+    box.innerHTML = `<div class="big">静</div><p>接下来 ${state.calRange} 天没有安排。</p>`;
+    const b = el('button', 'tb primary', '＋ 新建日程');
+    b.style.marginTop = '14px';
+    b.onclick = () => startNewSchedule(todayStr());
+    box.appendChild(b);
+    wrap.appendChild(box);
+  }
+  container.appendChild(wrap);
+}
+
+/** 一条日程的「列表行」，议程视图与右栏某天面板共用 */
+function scheduleRow(o, opts = {}) {
+  const s = o.schedule;
+  const row = el('div', 'sched-row c-' + colorOf(s) + (s.done ? ' done' : '') +
+    (state.selectedScheduleId === s.id ? ' active' : ''));
+
+  const circle = el('button', 'done-circle' + (s.done ? ' on' : ''), s.done ? '✓' : '');
+  circle.title = s.done ? '标记为未完成' : '标记为完成';
+  circle.onclick = (ev) => {
+    ev.stopPropagation();
+    toggleScheduleDone(s, o);
+  };
+  row.appendChild(circle);
+
+  const main = el('div', 'sr-main');
+  const line1 = el('div', 'sr-line1');
+  const t = hmToMin(s.start);
+  line1.appendChild(el('span', 'sr-time', s.allDay || t == null ? '全天' : minToHm(t)));
+  line1.appendChild(el('span', 'sr-title', s.title));
+  main.appendChild(line1);
+
+  const bits = [];
+  if (o.days > 1) bits.push(`${fmtMonthDay(o.startDate)} – ${fmtMonthDay(o.endDate)}`);
+  if (s.location) bits.push(s.location);
+  const rep = repeatDesc(s.repeat);
+  if (rep) bits.push(rep);
+  if (s.links && s.links.length) bits.push(`关联资料 ${s.links.length} 条`);
+  if (opts.inTrash && s.deletedAt) bits.push('删除于 ' + relTime(s.deletedAt));
+  if (bits.length) main.appendChild(el('div', 'sr-sub', bits.join('　·　')));
+  row.appendChild(main);
+
+  const cf = (opts.conflicts || {})[o.key];
+  if (cf && cf.length) {
+    const warn = el('div', 'sr-conflict', '与「' + cf.join('」「') + '」时间重叠');
+    main.appendChild(warn);
+  }
+  if (opts.inTrash) {
+    const acts = el('div', 'sr-acts');
+    const back = el('button', null, '还原');
+    back.onclick = async (ev) => {
+      ev.stopPropagation();
+      const r = await act(API.restoreSchedules([s.id]), '日程已还原');
+      if (r) {
+        applySnapshot(r);
+        renderAll();
+      }
+    };
+    const gone = el('button', null, '彻底删除');
+    gone.onclick = async (ev) => {
+      ev.stopPropagation();
+      const ok = await confirmDialog({
+        title: '彻底删除这条日程？',
+        message: '删除后无法恢复。',
+        okLabel: '彻底删除',
+        danger: true,
+      });
+      if (!ok) return;
+      const r = await act(API.deleteSchedulesForever([s.id]));
+      if (r) {
+        applySnapshot(r);
+        if (state.selectedScheduleId === s.id) state.selectedScheduleId = null;
+        renderAll();
+      }
+    };
+    acts.append(back, gone);
+    row.appendChild(acts);
+  } else {
+    row.onclick = () => selectOccurrence(o);
+  }
+  return row;
+}
+
+function selectOccurrence(o) {
+  state.selectedScheduleId = o.schedule.id;
+  state.selectedOccurrenceDate = o.startDate;
+  state.calSelectedDate = o.date;
+  state.scheduleEditing = null;
+  renderAll();
+}
+
+/** 在月视图里换一天：只改选中样式 + 重绘右栏，不动网格本身（否则双击会失效） */
+function selectDayInGrid(day) {
+  state.calSelectedDate = day;
+  state.selectedScheduleId = null;
+  state.scheduleEditing = null;
+  const grid = document.querySelector('.cal-grid');
+  if (grid) {
+    grid.querySelectorAll('.cal-cell.sel').forEach((c) => c.classList.remove('sel'));
+    const hit = grid.querySelector(`.cal-cell[data-date="${day}"]`);
+    if (hit) hit.classList.add('sel');
+  }
+  renderDetail();
+}
+
+async function toggleScheduleDone(s, o) {
+  if (s.repeat && s.repeat.freq !== 'none') {
+    const ok = await confirmDialog({
+      title: '这是重复日程',
+      message: `完成状态会作用在整个重复日程上（${repeatDesc(s.repeat)}）。\n只想勾掉这一次的话，可以用「只改这一次」把它拆出来。`,
+      okLabel: s.done ? '整条标记未完成' : '整条标记完成',
+    });
+    if (!ok) return;
+  }
+  const r = await act(API.updateSchedule(s.id, { done: !s.done }));
+  if (r) {
+    applySnapshot(r);
+    renderAll();
+    toast(!s.done ? '已标记完成' : '已恢复未完成', 'ok');
+  }
+}
+
+async function onDropSchedule(targetDay) {
+  const o = draggingSchedule;
+  draggingSchedule = null;
+  if (!o) return;
+  const s = o.schedule;
+  const delta = diffDays(o.date, targetDay);
+  if (!delta) return;
+  if (s.repeat && s.repeat.freq !== 'none') {
+    const ok = await confirmDialog({
+      title: '这是重复日程',
+      message: `拖动会改动整个重复规则（${repeatDesc(s.repeat)}）。\n只想挪这一次的话，点开日程用「只改这一次」。`,
+      okLabel: '整体改期',
+    });
+    if (!ok) return;
+  }
+  const patch = { date: addDays(s.date, delta) };
+  if (s.endDate) patch.endDate = addDays(s.endDate, delta);
+  const r = await act(API.updateSchedule(s.id, patch), `已改到 ${fmtMonthDay(patch.date)}`);
+  if (r) {
+    applySnapshot(r);
+    state.calSelectedDate = targetDay;
+    state.selectedScheduleId = s.id;
+    renderAll();
+  }
+}
+
+/* ---------------------------------------------------------------- 右栏 */
+
+function renderCalendarDetail() {
+  if (state.scheduleEditing) return renderScheduleEditor();
+  if (state.selectedScheduleId) {
+    const s = state.schedules.find((x) => x.id === state.selectedScheduleId);
+    if (s) return renderScheduleDetail(s);
+    state.selectedScheduleId = null;
+  }
+  return renderDayPanel(state.calSelectedDate || todayStr());
+}
+
+function calBarBase() {
+  const bar = [];
+  bar.push(mkTb('＋ 新建日程', 'primary', () => startNewSchedule(state.calSelectedDate || todayStr()), '⌘⇧N'));
+  bar.push(mkTb('导出 .ics', null, exportIcsFlow, '导进 macOS 日历 / Google 日历'));
+  const sp = el('span', 'spacer');
+  bar.push(sp);
+  return bar;
+}
+
+function renderDayPanel(day) {
+  const bar = calBarBase();
+  const isToday = day === todayStr();
+  if (!isToday) bar.push(mkTb('回到今天', 'ghost', () => gotoCalendar({ date: todayStr() }), 'T'));
+  renderDetailBar(bar);
+
+  const occs = dedupeOccurrences(occurrencesOn(state.schedules, day));
+  const conflicts = conflictsIn(occs);
+
+  const scroll = $('#detailScroll');
+  scroll.innerHTML = '';
+  const inner = el('div', 'detail-inner cal-detail');
+
+  inner.appendChild(el('div', 'd-title cal-day-title', fmtDayTitle(day)));
+  const subBits = [isToday ? '今天' : fmtRelDay(day)];
+  subBits.push(occs.length ? `${occs.length} 条日程` : '没有安排');
+  const doneN = occs.filter((o) => o.schedule.done).length;
+  if (doneN) subBits.push(`已完成 ${doneN}`);
+  const sub = el('div', 'cal-sub', subBits.join('　·　'));
+  inner.appendChild(sub);
+
+  if (!occs.length) {
+    const box = el('div', 'cal-empty');
+    box.innerHTML = '<p>这一天还没有安排。</p>';
+    const b = el('button', 'tb primary', '＋ 在这天新建日程');
+    b.onclick = () => startNewSchedule(day);
+    box.appendChild(b);
+    inner.appendChild(box);
+  } else {
+    const list = el('div', 'sched-list');
+    list.id = 'dayList';
+    for (const o of occs) list.appendChild(scheduleRow(o, { conflicts }));
+    inner.appendChild(list);
+  }
+
+  // 选的是今天：额外给出「接下来」与「本周」
+  if (isToday) {
+    const upcoming = dedupeOccurrences(
+      occurrencesInRange(state.schedules, addDays(day, 1), addDays(day, 3))
+    );
+    if (upcoming.length) {
+      const sec = el('div', 'd-section');
+      sec.appendChild(el('h4', null, '接下来 3 天'));
+      const list = el('div', 'sched-list compact');
+      list.id = 'upcomingList';
+      let lastDay = '';
+      for (const o of upcoming) {
+        if (o.date !== lastDay) {
+          lastDay = o.date;
+          sec.appendChild(el('div', 'sched-daysep', dayLabel(o.date)));
+        }
+        list.appendChild(scheduleRow(o));
+      }
+      sec.appendChild(list);
+      inner.appendChild(sec);
+    }
+
+    const ws = weekStart(day);
+    const we = addDays(ws, 6);
+    const week = dedupeOccurrences(occurrencesInRange(state.schedules, ws, we));
+    const sec2 = el('div', 'd-section');
+    sec2.appendChild(el('h4', null, '本周'));
+    const grid = el('div', 'kv-list');
+    const doneWeek = week.filter((o) => o.schedule.done).length;
+    const busy = [];
+    const byDayWeek = new Map();
+    for (const o of occurrencesInRange(state.schedules, ws, we)) {
+      if (!byDayWeek.has(o.date)) byDayWeek.set(o.date, []);
+      byDayWeek.get(o.date).push(o);
+    }
+    for (const [d, list] of byDayWeek) {
+      if (Object.keys(conflictsIn(list)).length) busy.push(fmtMonthDay(d));
+    }
+    busy.sort();
+    [
+      ['本周日程', `${week.length} 条`],
+      ['已完成', `${doneWeek} 条`],
+      ['有安排的天数', `${byDayWeek.size} 天`],
+      ['时间冲突的天', busy.length ? busy.join('、') : '没有'],
+    ].forEach(([k, v]) => {
+      const r = el('div', 'row');
+      r.appendChild(el('span', 'k', k));
+      r.appendChild(el('span', 'v', v));
+      grid.appendChild(r);
+    });
+    sec2.appendChild(grid);
+    inner.appendChild(sec2);
+  }
+
+  scroll.appendChild(inner);
+}
+
+function renderScheduleDetail(s) {
+  const bar = [
+    mkTb('编辑', 'primary', () => startEditSchedule(s)),
+    mkTb(s.done ? '标记未完成' : '标记完成', null, () => toggleScheduleDone(s, { key: `${s.id}@${s.date}` })),
+  ];
+  if (s.repeat && s.repeat.freq !== 'none') {
+    bar.push(
+      mkTb('只改这一次', null, () => splitScheduleFlow(s, state.selectedOccurrenceDate || s.date), '把这一次拆成独立日程，其余各次不变')
+    );
+  }
+  bar.push(
+    mkTb('移到回收站', 'danger', async () => {
+      const r = await act(API.trashSchedules([s.id]), '日程已移到回收站');
+      if (r) {
+        applySnapshot(r);
+        state.selectedScheduleId = null;
+        renderAll();
+      }
+    })
+  );
+  const sp = el('span', 'spacer');
+  bar.push(sp);
+  renderDetailBar(bar);
+
+  const scroll = $('#detailScroll');
+  scroll.innerHTML = '';
+  const inner = el('div', 'detail-inner cal-detail');
+
+  const h = el('div', 'd-title');
+  h.textContent = s.title;
+  inner.appendChild(h);
+
+  const meta = el('div', 'd-meta');
+  const kv = (k, v, mono) => {
+    const w = el('div', 'kv');
+    w.appendChild(el('span', 'k', k));
+    w.appendChild(el('span', 'v' + (mono ? ' mono' : ''), v));
+    return w;
+  };
+  meta.appendChild(kv('日期', s.endDate ? `${s.date} → ${s.endDate}` : s.date, true));
+  meta.appendChild(kv('时间', fmtTime(s)));
+  if (s.location) meta.appendChild(kv('地点', s.location));
+  if (s.category) meta.appendChild(kv('分类', s.category));
+  meta.appendChild(kv('提醒', s.remind == null ? '不提醒' : fmtRemind(s.remind)));
+  meta.appendChild(kv('状态', s.done ? '已完成' : '待办'));
+  const rep = repeatDesc(s.repeat);
+  if (rep) meta.appendChild(kv('重复', rep));
+  meta.appendChild(kv('创建于', relTime(s.createdAt)));
+  inner.appendChild(meta);
+
+  const colorRow = el('div', 'd-section');
+  colorRow.style.marginTop = '0';
+  colorRow.appendChild(el('h4', null, '色标'));
+  const chip = el('span', 'color-badge c-' + colorOf(s), COLOR_NAMES[colorOf(s)] || colorOf(s));
+  colorRow.appendChild(chip);
+  inner.appendChild(colorRow);
+
+  if (s.tags && s.tags.length) {
+    const sec = el('div', 'd-section');
+    sec.appendChild(el('h4', null, '标签'));
+    const box = el('div', 'card-tags');
+    box.style.marginTop = '0';
+    s.tags.forEach((t) => {
+      const c = el('span', 'mini-tag', t);
+      c.style.cursor = 'pointer';
+      c.onclick = () => {
+        state.view = 'tag:' + t;
+        state.filterTag = '';
+        state.selectedId = null;
+        state.selectedScheduleId = null;
+        renderAll();
+      };
+      box.appendChild(c);
+    });
+    sec.appendChild(box);
+    inner.appendChild(sec);
+  }
+
+  const secN = el('div', 'd-section');
+  secN.appendChild(el('h4', null, '备注'));
+  if (s.note && s.note.trim()) {
+    const c = el('div', 'md-body');
+    c.innerHTML = mdToHtml(s.note);
+    secN.appendChild(c);
+  } else {
+    secN.appendChild(el('div', 'd-content empty-hint', '（还没有备注）'));
+  }
+  inner.appendChild(secN);
+
+  // 关联资料
+  const secL = el('div', 'd-section');
+  const linked = (s.links || []).map((id) => state.entries.find((e) => e.id === id)).filter(Boolean);
+  secL.appendChild(el('h4', null, `关联资料 · ${linked.length}`));
+  if (!linked.length) {
+    const hint = el('div');
+    hint.style.cssText = 'font-size:12px;color:var(--ink-4);line-height:1.8';
+    hint.textContent = '这条日程还没有关联资料。点「编辑」可以把相关的记录挂上来。';
+    secL.appendChild(hint);
+  } else {
+    const box = el('div', 'link-cards');
+    for (const e of linked) box.appendChild(linkCard(e));
+    secL.appendChild(box);
+  }
+  inner.appendChild(secL);
+
+  scroll.appendChild(inner);
+}
+
+/** 关联资料卡片（日程详情、提醒里都用） */
+function linkCard(e) {
+  const card = el('button', 'link-card');
+  card.innerHTML = `
+    <span class="lc-badge">${esc(TYPE_LABEL[e.type] || e.type)}</span>
+    <span class="lc-main">
+      <span class="lc-title">${esc(e.title)}</span>
+      <span class="lc-sub">${esc(e.date || '')}${e.category ? '　·　' + esc(e.category) : ''}</span>
+    </span>`;
+  card.onclick = () => {
+    state.view = 'all';
+    state.q = '';
+    state.selectedId = e.id;
+    state.selectedScheduleId = null;
+    state.editing = null;
+    state.scheduleEditing = null;
+    renderAll();
+  };
+  return card;
+}
+
+function fmtRemind(min) {
+  const n = Number(min);
+  if (!Number.isFinite(n)) return '不提醒';
+  if (n === 0) return '准点';
+  if (n % 1440 === 0) return `提前 ${n / 1440} 天`;
+  if (n % 60 === 0) return `提前 ${n / 60} 小时`;
+  return `提前 ${n} 分钟`;
+}
+
+/* ------------------------------------------------------------ 日程编辑器 */
+
+function blankSchedule(dateStr) {
+  const day = dateStr || todayStr();
+  return {
+    isNew: true,
+    id: '',
+    title: '',
+    date: day,
+    endDate: '',
+    allDay: false,
+    start: '',
+    end: '',
+    location: '',
+    note: '',
+    category: state.view.startsWith('cat:') && state.view !== 'cat:__none__' ? state.view.slice(4) : '',
+    color: '',
+    tags: [],
+    links: [],
+    repeat: { freq: 'none' },
+    remind: null,
+  };
+}
+
+function draftFromSchedule(s) {
+  return {
+    isNew: false,
+    id: s.id,
+    title: s.title,
+    date: s.date,
+    endDate: s.endDate || '',
+    allDay: !!s.allDay,
+    start: s.start || '',
+    end: s.end || '',
+    location: s.location || '',
+    note: s.note || '',
+    category: s.category || '',
+    color: s.color || '',
+    tags: [...(s.tags || [])],
+    links: [...(s.links || [])],
+    repeat: s.repeat ? { ...s.repeat } : { freq: 'none' },
+    remind: s.remind == null ? null : s.remind,
+    done: !!s.done,
+  };
+}
+
+function startNewSchedule(dateStr) {
+  state.scheduleEditing = blankSchedule(dateStr);
+  state.selectedScheduleId = null;
+  state.selectedId = null;
+  state.editing = null;
+  renderAll();
+  const t = $('#sTitle');
+  if (t) t.focus();
+}
+
+function startEditSchedule(s) {
+  state.scheduleEditing = draftFromSchedule(s);
+  renderAll();
+  const t = $('#sTitle');
+  if (t) t.focus();
+}
+
+function renderScheduleEditor() {
+  const d = state.scheduleEditing;
+  const isNew = d.isNew;
+
+  const bar = [mkTb('保存', 'primary', saveScheduleEditing, '⌘S'), mkTb('取消', 'ghost', cancelScheduleEditing)];
+  const sp = el('span', 'spacer');
+  bar.push(sp);
+  if (!isNew) {
+    bar.push(
+      mkTb('删除', 'danger', async () => {
+        const ok = await confirmDialog({
+          title: '把这条日程移到回收站？',
+          message: '之后可以在回收站里还原。',
+          okLabel: '移到回收站',
+        });
+        if (!ok) return;
+        const r = await act(API.trashSchedules([d.id]), '日程已移到回收站');
+        if (r) {
+          applySnapshot(r);
+          state.scheduleEditing = null;
+          state.selectedScheduleId = null;
+          renderAll();
+        }
+      })
+    );
+  }
+  renderDetailBar(bar);
+
+  const scroll = $('#detailScroll');
+  scroll.innerHTML = '';
+  const inner = el('div', 'detail-inner wide cal-detail');
+  const form = el('div', 'form');
+
+  const catOptions = ['<option value="">未分类</option>']
+    .concat((state.stats.categories || []).map((c) => `<option value="${esc(c)}">${esc(c)}</option>`))
+    .join('');
+
+  form.innerHTML = `
+    <div class="field field-title">
+      <label>日程标题</label>
+      <input type="text" id="sTitle" placeholder="要做什么" value="${esc(d.title)}" />
+    </div>
+
+    <div class="grid-3">
+      <div class="field">
+        <label>日期</label>
+        <input type="date" id="sDate" value="${esc(d.date)}" />
+      </div>
+      <div class="field">
+        <label>结束日期（跨天时填）</label>
+        <input type="date" id="sEndDate" value="${esc(d.endDate || '')}" />
+      </div>
+      <div class="field">
+        <label>时间</label>
+        <div class="time-row">
+          <input type="time" id="sStart" value="${esc(d.start || '')}" ${d.allDay ? 'disabled' : ''} />
+          <span class="dash">–</span>
+          <input type="time" id="sEnd" value="${esc(d.end || '')}" ${d.allDay ? 'disabled' : ''} />
+        </div>
+        <label class="switch" style="margin-top:6px">
+          <input type="checkbox" id="sAllDay" ${d.allDay ? 'checked' : ''} /> 全天日程
+        </label>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="field">
+        <label>地点</label>
+        <input type="text" id="sLocation" placeholder="如：三楼会议室" value="${esc(d.location)}" />
+      </div>
+      <div class="field">
+        <label>分类</label>
+        <select id="sCategory">${catOptions}</select>
+      </div>
+      <div class="field">
+        <label>提前提醒</label>
+        <select id="sRemind">
+          ${REMIND_OPTIONS.map(
+            (o) => `<option value="${o.v}" ${String(d.remind == null ? '' : d.remind) === String(o.v) ? 'selected' : ''}>${esc(o.l)}</option>`
+          ).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>色标</label>
+      <div class="color-picker" id="sColors"></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="field">
+        <label>重复</label>
+        <div class="repeat-row">
+          <select id="sRepeatFreq">
+            ${REPEAT_FREQS.map(
+              (f) => `<option value="${f}" ${(d.repeat.freq || 'none') === f ? 'selected' : ''}>${esc(REPEAT_NAMES[f])}</option>`
+            ).join('')}
+          </select>
+          <input type="date" id="sRepeatUntil" value="${esc(d.repeat.until || '')}" title="重复到哪天（留空表示一直重复）" />
+        </div>
+        <div class="hint">重复日程只保存规则，改规则就改一条；只想改某一次，用详情里的「只改这一次」。</div>
+      </div>
+      <div class="field">
+        <label>标签</label>
+        <div class="tag-editor" id="sTagEditor">
+          <input type="text" id="sTagInput" placeholder="输入后按回车或逗号添加" />
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>备注</label>
+      <textarea class="plain sched-note" id="sNote" placeholder="支持 Markdown：**粗体**、列表、表格…">${esc(d.note)}</textarea>
+    </div>
+
+    <div class="field">
+      <label>关联资料</label>
+      <div class="link-picker" id="sLinkPicker"></div>
+      <div class="hint">关联之后，资料详情里也会反向显示「相关日程」。</div>
+    </div>
+  `;
+  inner.appendChild(form);
+  scroll.appendChild(inner);
+
+  // 分类选中
+  const sel = $('#sCategory');
+  if (d.category && !(state.stats.categories || []).includes(d.category)) {
+    sel.appendChild(new Option(d.category, d.category));
+  }
+  sel.value = d.category || '';
+
+  // 事件
+  $('#sTitle').oninput = (e) => (d.title = e.target.value);
+  $('#sDate').onchange = (e) => (d.date = e.target.value || todayStr());
+  $('#sEndDate').onchange = (e) => (d.endDate = e.target.value || '');
+  $('#sStart').onchange = (e) => (d.start = e.target.value || '');
+  $('#sEnd').onchange = (e) => (d.end = e.target.value || '');
+  $('#sAllDay').onchange = (e) => {
+    d.allDay = e.target.checked;
+    renderScheduleEditor();
+  };
+  $('#sLocation').oninput = (e) => (d.location = e.target.value);
+  sel.onchange = (e) => (d.category = e.target.value);
+  $('#sNote').oninput = (e) => (d.note = e.target.value);
+  $('#sRepeatFreq').onchange = (e) => {
+    d.repeat = { ...d.repeat, freq: e.target.value };
+    if (e.target.value === 'none') delete d.repeat.until;
+  };
+  $('#sRepeatUntil').onchange = (e) => {
+    if (e.target.value) d.repeat = { ...d.repeat, until: e.target.value };
+    else {
+      const r = { ...d.repeat };
+      delete r.until;
+      d.repeat = r;
+    }
+  };
+  $('#sRemind').onchange = (e) => (d.remind = e.target.value === '' ? null : Number(e.target.value));
+
+  renderColorPicker();
+  renderScheduleTagEditor();
+  renderLinkPicker();
+
+  ['#sTitle', '#sLocation', '#sNote'].forEach((sel2) => {
+    const node = $(sel2);
+    if (node) {
+      node.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+          e.preventDefault();
+          saveScheduleEditing();
+        }
+      });
+    }
+  });
+}
+
+function renderColorPicker() {
+  const d = state.scheduleEditing;
+  const box = $('#sColors');
+  if (!box) return;
+  box.innerHTML = '';
+  const auto = el('button', 'color-dot auto' + (!d.color ? ' on' : ''), '自动');
+  auto.title = '按分类自动分配';
+  auto.onclick = () => {
+    d.color = '';
+    renderColorPicker();
+  };
+  box.appendChild(auto);
+  SCHEDULE_COLORS.forEach((c) => {
+    const b = el('button', 'color-dot c-' + c + (d.color === c ? ' on' : ''));
+    b.title = COLOR_NAMES[c];
+    b.onclick = () => {
+      d.color = c;
+      renderColorPicker();
+    };
+    box.appendChild(b);
+  });
+}
+
+function renderScheduleTagEditor() {
+  const d = state.scheduleEditing;
+  const box = $('#sTagEditor');
+  if (!box) return;
+  box.querySelectorAll('.t').forEach((n) => n.remove());
+  const input = $('#sTagInput');
+  d.tags.forEach((t) => {
+    const chip = el('span', 't');
+    chip.appendChild(document.createTextNode(t));
+    const x = el('button', null, '✕');
+    x.onclick = () => {
+      d.tags = d.tags.filter((v) => v !== t);
+      renderScheduleTagEditor();
+    };
+    chip.appendChild(x);
+    box.insertBefore(chip, input);
+  });
+  const commit = () => {
+    const v = input.value.trim().replace(/^#/, '');
+    if (v) {
+      v.split(/[,，]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .forEach((p) => {
+          if (!d.tags.includes(p)) d.tags.push(p);
+        });
+    }
+    input.value = '';
+    renderScheduleTagEditor();
+  };
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
+      e.preventDefault();
+      commit();
+    } else if (e.key === 'Backspace' && !input.value && d.tags.length) {
+      d.tags.pop();
+      renderScheduleTagEditor();
+    }
+  };
+  input.onblur = commit;
+}
+
+function renderLinkPicker() {
+  const d = state.scheduleEditing;
+  const box = $('#sLinkPicker');
+  if (!box) return;
+  box.innerHTML = '';
+
+  const chips = el('div', 'card-tags lp-chips');
+  d.links.forEach((id) => {
+    const e = state.entries.find((x) => x.id === id);
+    const chip = el('span', 'mini-tag');
+    chip.appendChild(document.createTextNode(e ? e.title : '（已删除的资料）'));
+    const x = el('button', null, '✕');
+    x.onclick = () => {
+      d.links = d.links.filter((v) => v !== id);
+      renderLinkPicker();
+    };
+    chip.appendChild(x);
+    chips.appendChild(chip);
+  });
+  if (!d.links.length) chips.appendChild(el('span', 'lp-hint', '还没有关联资料'));
+  box.appendChild(chips);
+
+  const search = el('input', 'lp-search');
+  search.type = 'text';
+  search.placeholder = '搜索要关联的资料…';
+  box.appendChild(search);
+
+  const list = el('div', 'lp-list');
+  box.appendChild(list);
+
+  const draw = () => {
+    const q = search.value.trim().toLowerCase();
+    list.innerHTML = '';
+    const pool = state.entries
+      .filter((e) => !e.deleted)
+      .filter((e) => (q ? matchQuery(e, q) : true))
+      .slice(0, 40);
+    if (!pool.length) {
+      list.appendChild(el('div', 'lp-hint', '没有匹配的资料'));
+      return;
+    }
+    for (const e of pool) {
+      const on = d.links.includes(e.id);
+      const row = el('button', 'lp-row' + (on ? ' on' : ''));
+      row.innerHTML = `<span class="lp-check">${on ? '✓' : ''}</span><span class="lp-title">${esc(e.title)}</span><span class="lp-meta">${esc(e.date || '')}</span>`;
+      row.onclick = () => {
+        if (on) d.links = d.links.filter((v) => v !== e.id);
+        else d.links.push(e.id);
+        renderLinkPicker();
+      };
+      list.appendChild(row);
+    }
+  };
+  search.oninput = draw;
+  draw();
+}
+
+async function saveScheduleEditing() {
+  const d = state.scheduleEditing;
+  if (!d) return;
+  const title = (d.title || '').trim();
+  if (!title) return toast('给日程起个名字再保存', 'err');
+  const payload = {
+    title,
+    date: d.date || todayStr(),
+    endDate: d.endDate || null,
+    allDay: !!d.allDay,
+    start: d.allDay ? '' : d.start || '',
+    end: d.allDay ? '' : d.end || '',
+    location: (d.location || '').trim(),
+    note: d.note || '',
+    category: d.category || '',
+    color: d.color || '',
+    tags: d.tags.slice(),
+    links: d.links.slice(),
+    repeat: d.repeat && d.repeat.freq !== 'none' ? d.repeat : { freq: 'none' },
+    remind: d.remind == null ? null : Number(d.remind),
+  };
+  const r = d.isNew
+    ? await act(API.createSchedule(payload))
+    : await act(API.updateSchedule(d.id, payload));
+  if (!r) return;
+  applySnapshot(r);
+  const saved = r.schedule;
+  state.scheduleEditing = null;
+  state.selectedScheduleId = saved.id;
+  state.calSelectedDate = saved.date;
+  state.calCursor = saved.date;
+  renderAll();
+  toast(d.isNew ? '日程已创建' : '日程已保存', 'ok');
+}
+
+function cancelScheduleEditing() {
+  state.scheduleEditing = null;
+  renderAll();
+}
+
+async function splitScheduleFlow(s, dateStr) {
+  const day = dateStr || s.date;
+  const ok = await confirmDialog({
+    title: '只改这一次？',
+    message: `「${s.title}」是重复日程。\n这次操作会把 ${fmtCnDate(day)} 这一次拆成一条独立日程，其余各次保持不变。`,
+    okLabel: '拆出这一次',
+  });
+  if (!ok) return;
+  const r = await act(API.splitSchedule(s.id, day), '已拆出一条独立日程');
+  if (!r) return;
+  applySnapshot(r);
+  state.selectedScheduleId = r.schedule.id;
+  state.selectedOccurrenceDate = day;
+  state.calSelectedDate = day;
+  state.scheduleEditing = draftFromSchedule(r.schedule);
+  renderAll();
+}
+
+/* -------------------------------------------------------------- 提醒条 */
+
+function renderReminders() {
+  const bar = $('#remindBar');
+  if (!bar) return;
+  if (!state.reminders.length) {
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+  bar.classList.remove('hidden');
+  bar.innerHTML = '';
+  const inner = el('div', 'rb-inner');
+  const n = state.reminders.length;
+  inner.appendChild(el('span', 'rb-ico', '⏰'));
+  inner.appendChild(
+    el(
+      'span',
+      'rb-text',
+      n === 1 ? `日程提醒：${state.reminders[0].title}` : `有 ${n} 条日程该提醒了`
+    )
+  );
+  state.reminders.slice(0, 3).forEach((it) => {
+    const b = el('button', 'rb-item', `${it.time}　${it.title}`);
+    b.onclick = () => jumpToSchedule(it.id, it.date);
+    inner.appendChild(b);
+  });
+  if (n > 3) {
+    const more = el('button', 'rb-item', `还有 ${n - 3} 条…`);
+    more.onclick = () => gotoCalendar({ date: todayStr() });
+    inner.appendChild(more);
+  }
+  const close = el('button', 'rb-close', '✕');
+  close.title = '知道了';
+  close.onclick = () => {
+    state.reminders = [];
+    renderReminders();
+  };
+  inner.appendChild(close);
+  bar.appendChild(inner);
+}
+
+function pushReminders(type, items) {
+  const list = (items || []).map((it) => ({
+    key: it.key,
+    id: it.id,
+    title: it.title,
+    date: it.date,
+    time: it.time,
+    location: it.location,
+    allDay: it.allDay,
+  }));
+  if (!list.length) return;
+  const seen = new Set(state.reminders.map((x) => x.key));
+  for (const it of list) if (!seen.has(it.key)) state.reminders.push(it);
+  renderReminders();
+  if (type === 'fire') {
+    toast(`⏰ ${list.length} 条日程到点了`, 'ok');
+  }
+}
+
+/* ------------------------------------------------------------ .ics 导出 */
+
+function exportIcsFlow() {
+  const body = el('div');
+  const total = state.schedules.filter((s) => !s.deleted).length;
+  if (!total) {
+    toast('还没有日程可以导出', 'err');
+    return;
+  }
+  body.innerHTML = `
+    <p style="font-size:12.5px;color:var(--ink-2);margin-bottom:14px;line-height:1.8">
+      导出成标准 iCalendar（.ics）文件，可以直接导进 macOS 日历、Google 日历。
+      重复日程会按规则展开成一次次具体时间，提醒设置也会一起带过去。
+    </p>
+    <label class="opt-row">
+      <input type="radio" name="icsRange" value="month" checked />
+      <span><span class="t">当前月</span><span class="d">${esc(fmtMonthTitle(state.calCursor || todayStr()))}的日程</span></span>
+    </label>
+    <label class="opt-row">
+      <input type="radio" name="icsRange" value="next30" />
+      <span><span class="t">未来 30 天</span><span class="d">从今天起一个月内要发生的事</span></span>
+    </label>
+    <label class="opt-row">
+      <input type="radio" name="icsRange" value="all" />
+      <span><span class="t">全部日程</span><span class="d">资料库里的 ${total} 条日程全导，跨年也会展开</span></span>
+    </label>`;
+  const foot = el('div');
+  foot.style.cssText = 'display:flex;gap:8px;width:100%';
+  const sp = el('span');
+  sp.style.flex = '1';
+  const cancel = el('button', 'tb', '取消');
+  const ok = el('button', 'tb primary', '选择位置并导出');
+  foot.append(sp, cancel, ok);
+  const { close } = openModal({ title: '导出日程（.ics）', body, footer: foot });
+  cancel.onclick = close;
+  ok.onclick = async () => {
+    const range = body.querySelector('input[name="icsRange"]:checked').value;
+    close();
+    const r = await act(API.exportIcs({ range, anchor: state.calCursor || todayStr() }));
+    if (!r || r.canceled) return;
+    const go = await confirmDialog({
+      title: '导出完成',
+      message: `文件：${r.path}\n共 ${r.events} 个日程事件（${r.from} ~ ${r.to}）。\n双击这个 .ics 就能导入系统日历。`,
+      okLabel: '在访达中显示',
+    });
+    if (go) await act(API.revealPath(r.path));
+  };
 }
 
 /* ---------------------------------------------------------------- 渲染：右栏 */
@@ -665,6 +2076,7 @@ function mkTb(label, cls, onclick, title) {
 }
 
 function renderDetail() {
+  if (state.view === 'calendar') return renderCalendarDetail();
   if (state.editing) return renderEditor();
   const e = state.entries.find((x) => x.id === state.selectedId);
 
@@ -817,6 +2229,20 @@ function renderDetail() {
     sec.appendChild(el('h4', null, `附件 · ${e.attachments.length}`));
     const list = el('div', 'att-list');
     e.attachments.forEach((a) => list.appendChild(attRow(a, { onRemove: null })));
+    sec.appendChild(list);
+    inner.appendChild(sec);
+  }
+
+  // 反向关联：日程里挂过这条资料的，在这里列出来
+  const related = state.schedules.filter((s) => !s.deleted && (s.links || []).includes(e.id));
+  if (related.length) {
+    const sec = el('div', 'd-section');
+    sec.appendChild(el('h4', null, `相关日程 · ${related.length}`));
+    const list = el('div', 'sched-list compact');
+    related
+      .slice()
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+      .forEach((s) => list.appendChild(scheduleRow({ schedule: s, key: s.id, date: s.date, startDate: s.date, endDate: s.endDate || s.date, days: 1 })));
     sec.appendChild(list);
     inner.appendChild(sec);
   }
@@ -1725,6 +3151,10 @@ function openExportDialog(ids) {
     <label class="opt-row" style="margin-top:14px">
       <input type="checkbox" id="expAtt" checked />
       <span><span class="t">同时复制附件文件</span><span class="d">把附件副本一并复制到导出位置，Markdown 里的链接就能直接打开。</span></span>
+    </label>
+    <label class="opt-row">
+      <input type="checkbox" id="expSched" />
+      <span><span class="t">附带相关日程</span><span class="d">在有关联日程的资料下面多一段「相关日程」，交给 AI 时能同时看到记录和安排。</span></span>
     </label>`;
   const foot = el('div');
   foot.style.cssText = 'display:flex;gap:8px;width:100%';
@@ -1739,7 +3169,8 @@ function openExportDialog(ids) {
   cancel.onclick = close;
 
   prev.onclick = async () => {
-    const r = await act(API.exportPreview(ids));
+    const includeSchedules = body.querySelector('#expSched').checked;
+    const r = await act(API.exportPreview(ids, { includeSchedules }));
     if (!r) return;
     const pre = el('pre', 'preview-md', r.markdown);
     const { close: c2 } = openModal({
@@ -1768,8 +3199,9 @@ function openExportDialog(ids) {
   ok.onclick = async () => {
     const mode = body.querySelector('input[name="expMode"]:checked').value;
     const copyAttachments = body.querySelector('#expAtt').checked;
+    const includeSchedules = body.querySelector('#expSched').checked;
     close();
-    const r = await act(API.exportMarkdown(ids, { mode, copyAttachments }));
+    const r = await act(API.exportMarkdown(ids, { mode, copyAttachments, includeSchedules }));
     if (!r || r.canceled) return;
     if (r.mode === 'combined') {
       toast(`已导出 ${r.entries} 条到 ${r.path.split('/').pop()}`, 'ok');
@@ -1854,6 +3286,27 @@ function openSettings() {
     </div>
 
     <div class="set-section">
+      <h4>日历与日程</h4>
+      <label class="set-row" style="cursor:pointer">
+        <div class="set-info">
+          <div class="set-t">提醒同时走 macOS 通知中心</div>
+          <div class="set-d">关掉之后只在应用内弹提示条。注意：应用没打开时不会提醒 —— 这是本地离线应用的物理限制。</div>
+        </div>
+        <input type="checkbox" id="setNotify" ${state.prefs.notify ? 'checked' : ''} style="accent-color:var(--moss);width:16px;height:16px" />
+      </label>
+      <div class="set-row">
+        <div class="set-info">
+          <div class="set-t">导出日程</div>
+          <div class="set-d">导出标准 .ics 文件，可导进 macOS 日历、Google 日历；重复日程会展开成具体时间。</div>
+        </div>
+        <button class="tb" id="setExportIcs">导出 .ics…</button>
+      </div>
+      <div class="set-note">
+        日程与资料存在同一个 archive.json 里，所以备份、恢复、迁移都会自动带上它们，不需要单独操作。
+      </div>
+    </div>
+
+    <div class="set-section">
       <h4>显示</h4>
       <label class="set-row" style="cursor:pointer">
         <div class="set-info">
@@ -1928,6 +3381,13 @@ function openSettings() {
     await changeLibraryFlow();
     openSettings();
   };
+
+  // 日历与日程
+  body.querySelector('#setNotify').onchange = (e) => {
+    setPrefs({ notify: e.target.checked });
+    toast(e.target.checked ? '提醒会同时发到 macOS 通知中心' : '只在应用内提示', 'ok');
+  };
+  body.querySelector('#setExportIcs').onclick = () => exportIcsFlow();
 
   // 显示
   body.querySelector('#setMdPreview').onchange = (e) => {
@@ -2146,11 +3606,11 @@ function bindEvents() {
     }
   };
   $('#btnEmptyTrash').onclick = async () => {
-    const n = state.stats.trashed;
+    const n = state.stats.trashed + (state.stats.schedules ? state.stats.schedules.trashed : 0);
     if (!n) return toast('回收站已经是空的', '');
     const ok = await confirmDialog({
       title: `清空回收站（${n} 条）？`,
-      message: '回收站里的全部资料与附件都会被彻底删除，无法恢复。',
+      message: '回收站里的全部资料、日程与附件都会被彻底删除，无法恢复。',
       okLabel: '清空回收站',
       danger: true,
     });
@@ -2159,6 +3619,7 @@ function bindEvents() {
     if (r) {
       applySnapshot(r);
       state.selectedId = null;
+      state.selectedScheduleId = null;
       state.checked.clear();
       renderAll();
     }
@@ -2167,6 +3628,36 @@ function bindEvents() {
   $('#btnOpenLib').onclick = () => act(API.openLibrary());
   $('#libPath').onclick = () => act(API.openLibrary());
   $('#btnChangeLib').onclick = changeLibraryFlow;
+
+  // ---- 日历工具条 ----
+  $('#calPrev').onclick = () => {
+    state.calCursor = state.calView === 'month' ? addMonths(state.calCursor, -1) : addDays(state.calCursor, -state.calRange);
+    state.selectedScheduleId = null;
+    renderAll();
+  };
+  $('#calNext').onclick = () => {
+    state.calCursor = state.calView === 'month' ? addMonths(state.calCursor, 1) : addDays(state.calCursor, state.calRange);
+    state.selectedScheduleId = null;
+    renderAll();
+  };
+  $('#calToday').onclick = () => gotoCalendar({ date: todayStr() });
+  $('#calNew').onclick = () => startNewSchedule(state.calSelectedDate || todayStr());
+  $('#calExport').onclick = exportIcsFlow;
+  $('#calViewSeg').querySelectorAll('button').forEach((b) => {
+    b.onclick = () => {
+      state.calView = b.dataset.v;
+      if (state.calView === 'agenda') state.calCursor = todayStr();
+      setPrefs({ calView: state.calView });
+      renderAll();
+    };
+  });
+  $('#calRangeSeg').querySelectorAll('button').forEach((b) => {
+    b.onclick = () => {
+      state.calRange = Number(b.dataset.r);
+      setPrefs({ calRange: state.calRange });
+      renderAll();
+    };
+  });
 
   // 左右两栏收起 / 展开
   $('#sideCollapse').onclick = toggleSidebar;
@@ -2216,17 +3707,35 @@ function bindEvents() {
   // 全局快捷键
   document.addEventListener('keydown', (e) => {
     const meta = e.metaKey || e.ctrlKey;
+    const tag = (e.target && e.target.tagName) || '';
+    const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (e.target && e.target.isContentEditable);
     if (meta && e.key === 'f') {
       e.preventDefault();
       $('#searchInput').focus();
       $('#searchInput').select();
     } else if (meta && e.key === 's') {
-      if (state.editing) {
+      if (state.scheduleEditing) {
+        e.preventDefault();
+        saveScheduleEditing();
+      } else if (state.editing) {
         e.preventDefault();
         saveEditing();
       }
-    } else if (e.key === 'Escape' && state.editing && !modalCloser) {
-      cancelEditing();
+    } else if (e.key === 'Escape' && !modalCloser) {
+      if (state.scheduleEditing) cancelScheduleEditing();
+      else if (state.editing) cancelEditing();
+    } else if (!inField && !meta && state.view === 'calendar') {
+      // 日历里的裸键：← → 切月 / 切区间，T 回今天
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        $('#calPrev').click();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        $('#calNext').click();
+      } else if (e.key === 't' || e.key === 'T') {
+        e.preventDefault();
+        gotoCalendar({ date: todayStr() });
+      }
     }
   });
 
@@ -2291,6 +3800,12 @@ async function boot() {
   btnEmpty.id = 'btnEmptyTrash';
   document.querySelector('.list-meta').insertBefore(btnEmpty, $('#btnClearFilters'));
 
+  // 日历的默认落点：今天是光标，也是选中的那天
+  state.calCursor = todayStr();
+  state.calSelectedDate = todayStr();
+  if (state.prefs.calView) state.calView = state.prefs.calView;
+  if (state.prefs.calRange) state.calRange = state.prefs.calRange;
+
   // 先用当前主题渲染一遍，避免首屏闪一下默认色
   applyPrefs();
   bindEvents();
@@ -2301,8 +3816,11 @@ async function boot() {
     return;
   }
   applySnapshot(r);
+  if (state.prefs.calView) state.calView = state.prefs.calView;
+  if (state.prefs.calRange) state.calRange = state.prefs.calRange;
   applyPrefs();
   renderAll();
+  renderReminders();
 
   if (state.migratedFrom) {
     toast('资料库已随改名迁到「My Life 资料库」', 'ok');
