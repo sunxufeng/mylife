@@ -227,6 +227,22 @@ class ArchiveStore {
       remind,
       done: !!s.done,
       repeatOf: s.repeatOf ? String(s.repeatOf) : null,
+      /** 数据来源：'local' 本机创建，'feishu' 由飞书日历同步进来 */
+      source: s.source === 'feishu' ? 'feishu' : 'local',
+      /** 飞书同步元数据：{ calendarId, eventId, updatedAt, syncedAt, push, dirty }
+       *  - 飞书来的日程：calendarId+eventId 作为去重/增量更新主键
+       *  - 本机日程若要推送到飞书：push=true 且尚未有 eventId 时由同步引擎创建 */
+      feishu:
+        s.feishu && typeof s.feishu === 'object'
+          ? {
+              calendarId: s.feishu.calendarId || '',
+              eventId: s.feishu.eventId || '',
+              updatedAt: s.feishu.updatedAt || '',
+              syncedAt: s.feishu.syncedAt || '',
+              push: !!s.feishu.push,
+              dirty: !!s.feishu.dirty,
+            }
+          : null,
       createdAt: s.createdAt || nowIso(),
       updatedAt: s.updatedAt || s.createdAt || nowIso(),
       deleted: !!s.deleted,
@@ -547,6 +563,8 @@ class ArchiveStore {
       'remind',
       'done',
       'repeatOf',
+      'source',
+      'feishu',
     ];
     for (const key of allowed) {
       if (patch[key] !== undefined) sched[key] = patch[key];

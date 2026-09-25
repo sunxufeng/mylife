@@ -25,6 +25,8 @@ const {
 
 const { ArchiveStore, uid } = require('./store');
 const { LibraryService, defaultLibraryPath } = require('./library');
+const { FeishuClient } = require('./feishu');
+const { pullFromFeishu, pushToFeishu } = require('./sync');
 const {
   occurrencesOn,
   occurrencesInRange,
@@ -50,6 +52,8 @@ let win = null;
 let store = null;
 /** @type {LibraryService|null} */
 let lib = null;
+/** @type {FeishuClient|null} */
+let feishu = null;
 /** 这次启动是否把旧版「人生档案馆」目录改名迁移过来了 */
 let migratedFrom = null;
 
@@ -390,6 +394,43 @@ function registerIpc() {
     });
     return { ...out, range };
   });
+
+  // ---- 飞书日历同步 ----
+  handle('feishu:config', async () => ({ config: feishu.status() }));
+
+  handle('feishu:save-config', async (patch) => {
+    const cur = feishu.config();
+    const merged = { ...(patch || {}) };
+    // 密钥输入框留空时不覆盖已保存的 secret；端口给默认值
+    if (merged.appSecret === '' || merged.appSecret == null) merged.appSecret = cur.appSecret;
+    if (!merged.redirectPort) merged.redirectPort = cur.redirectPort || 18925;
+    feishu.saveConfig(merged);
+    return { config: feishu.status() };
+  });
+
+  handle('feishu:login', async () => {
+    const r = await feishu.login();
+    return { ...r, config: feishu.status() };
+  });
+
+  handle('feishu:logout', async () => {
+    await feishu.logout();
+    return { config: feishu.status() };
+  });
+
+  handle('feishu:pull', async () => {
+    const r = await pullFromFeishu(store, feishu);
+    sendFeishuResult(r, 'pull', false);
+    return { ...r, config: feishu.status(), stats: store.stats(), ...snapshotEntries() };
+  });
+
+  handle('feishu:push', async () => {
+    const r = await pushToFeishu(store, feishu);
+    sendFeishuResult(r, 'push', false);
+    return { ...r, config: feishu.status(), stats: store.stats(), ...snapshotEntries() };
+  });
+
+  handle('feishu:status', async () => ({ config: feishu.status() }));
 
   // ---- 附件 ----
   handle('attachment:add-paths', async (entryId, paths) => {
@@ -738,6 +779,42 @@ function startReminderLoop() {
 }
 
 // ---------------------------------------------------------------------------
+// 飞书日历同步
+// ---------------------------------------------------------------------------
+
+/** 把同步结果推给渲染进程（用于 toast / 状态刷新） */
+function sendFeishuResult(result, kind, silent) {
+  if (!win || win.isDestroyed()) return;
+  // 同时把最新数据快照带过去，渲染端无论走 IPC 返回值还是事件都能刷新界面
+  win.webContents.send('feishu:sync-result', {
+    kind,
+    silent,
+    stats: store.stats(),
+    ...snapshotEntries(),
+    ...result,
+  });
+}
+
+let feishuAutoTimer = null;
+
+/** 开启/重启自动同步：启动后先拉一次，之后每 30 分钟拉一次（仅当已开启且已登录） */
+function startFeishuAutoSync() {
+  if (feishuAutoTimer) clearInterval(feishuAutoTimer);
+  const tick = async () => {
+    try {
+      const st = feishu.status();
+      if (!st.autoSync || !st.loggedIn) return;
+      const r = await pullFromFeishu(store, feishu);
+      sendFeishuResult(r, 'pull', true);
+    } catch (e) {
+      feishu.saveConfig({ lastError: e.message });
+    }
+  };
+  feishuAutoTimer = setInterval(tick, 30 * 60 * 1000);
+  setTimeout(tick, 8000);
+}
+
+// ---------------------------------------------------------------------------
 // 生命周期
 // ---------------------------------------------------------------------------
 
@@ -750,6 +827,7 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+  feishu = new FeishuClient(lib);
 
   // archive:// 只读服务资料库目录内的文件
   protocol.handle('archive', async (request) => {
@@ -770,6 +848,7 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
   startReminderLoop();
+  startFeishuAutoSync();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

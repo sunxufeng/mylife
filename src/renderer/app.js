@@ -778,6 +778,7 @@ function renderScheduleCard(o, { inTrash = false } = {}) {
 
   const top = el('div', 'card-top');
   top.appendChild(el('span', 'type-badge sched', inTrash ? '回收站' : '日程'));
+  if (s.source === 'feishu') top.appendChild(el('span', 'type-badge feishu', '飞书'));
   top.appendChild(el('span', 'date', s.endDate ? `${s.date} → ${s.endDate}` : s.date || ''));
   card.appendChild(top);
 
@@ -1438,6 +1439,7 @@ function renderScheduleDetail(s) {
   if (s.category) meta.appendChild(kv('分类', s.category));
   meta.appendChild(kv('提醒', s.remind == null ? '不提醒' : fmtRemind(s.remind)));
   meta.appendChild(kv('状态', s.done ? '已完成' : '待办'));
+  if (s.source === 'feishu') meta.appendChild(kv('来源', '飞书日历'));
   const rep = repeatDesc(s.repeat);
   if (rep) meta.appendChild(kv('重复', rep));
   meta.appendChild(kv('创建于', relTime(s.createdAt)));
@@ -1552,6 +1554,8 @@ function blankSchedule(dateStr) {
     links: [],
     repeat: { freq: 'none' },
     remind: null,
+    source: 'local',
+    feishu: { push: false },
   };
 }
 
@@ -1574,6 +1578,8 @@ function draftFromSchedule(s) {
     repeat: s.repeat ? { ...s.repeat } : { freq: 'none' },
     remind: s.remind == null ? null : s.remind,
     done: !!s.done,
+    source: s.source === 'feishu' ? 'feishu' : 'local',
+    feishu: s.feishu && typeof s.feishu === 'object' ? { ...s.feishu } : { push: false },
   };
 }
 
@@ -1714,6 +1720,14 @@ function renderScheduleEditor() {
       <div class="link-picker" id="sLinkPicker"></div>
       <div class="hint">关联之后，资料详情里也会反向显示「相关日程」。</div>
     </div>
+
+    <div class="field" id="sFeishuField" style="${d.source === 'feishu' ? 'display:none' : ''}">
+      <label>同步到飞书</label>
+      <label class="switch" style="margin-top:2px">
+        <input type="checkbox" id="sFeishuPush" ${d.feishu && d.feishu.push ? 'checked' : ''} /> 把这条日程（含改动）推送进我的飞书主日历
+      </label>
+      <div class="hint">勾选后，在设置里点「推送到飞书」会把它新建 / 更新到飞书。从飞书拉进来的日程会自动同步，这里不用勾。</div>
+    </div>
   `;
   inner.appendChild(form);
   scroll.appendChild(inner);
@@ -1751,6 +1765,10 @@ function renderScheduleEditor() {
     }
   };
   $('#sRemind').onchange = (e) => (d.remind = e.target.value === '' ? null : Number(e.target.value));
+  const fsPush = $('#sFeishuPush');
+  if (fsPush) fsPush.onchange = (e) => {
+    d.feishu = { ...(d.feishu || { push: false }), push: e.target.checked };
+  };
 
   renderColorPicker();
   renderScheduleTagEditor();
@@ -1911,6 +1929,8 @@ async function saveScheduleEditing() {
     links: d.links.slice(),
     repeat: d.repeat && d.repeat.freq !== 'none' ? d.repeat : { freq: 'none' },
     remind: d.remind == null ? null : Number(d.remind),
+    source: d.source === 'feishu' ? 'feishu' : 'local',
+    feishu: d.feishu && typeof d.feishu === 'object' ? d.feishu : { push: false },
   };
   const r = d.isNew
     ? await act(API.createSchedule(payload))
@@ -3242,7 +3262,7 @@ async function doBackup({ toLibrary = true } = {}) {
 
 /* ---------------------------------------------------------------- 设置面板 */
 
-function openSettings() {
+async function openSettings() {
   const body = el('div');
 
   const themes = THEME_ORDER.map(
@@ -3322,6 +3342,46 @@ function openSettings() {
         </div>
         <button class="tb" id="setToggleSide">${state.prefs.sidebarCollapsed ? '展开分类栏' : '收起分类栏'}</button>
         <button class="tb" id="setToggleList">${state.prefs.listCollapsed ? '展开列表栏' : '收起列表栏'}</button>
+      </div>
+    </div>
+
+    <div class="set-section" id="fsSection">
+      <h4>飞书日历同步</h4>
+      <div class="set-note">
+        把飞书<strong>主日历</strong>的日程拉进 My Life（自动或手动），也可以把本机手动创建的日程推回飞书。
+        需要先在飞书开放平台给这个应用开通日历权限（读取 / 读取日程 / 更新日程），并在「重定向 URL」里加上
+        <code>http://127.0.0.1:18925/callback</code>。
+      </div>
+      <div class="set-row fs-row">
+        <div class="set-info"><div class="set-t">App ID</div></div>
+        <input type="text" id="fsAppId" class="fs-input" placeholder="cli_xxxxxxxx" autocomplete="off" />
+      </div>
+      <div class="set-row fs-row">
+        <div class="set-info"><div class="set-t">App Secret</div></div>
+        <input type="password" id="fsAppSecret" class="fs-input" placeholder="如已填过可留空" autocomplete="off" />
+      </div>
+      <div class="set-row fs-row">
+        <div class="set-info">
+          <div class="set-t">回调端口</div>
+          <div class="set-d">飞书「重定向 URL」填 http://127.0.0.1:&lt;端口&gt;/callback</div>
+        </div>
+        <input type="number" id="fsPort" class="fs-input" value="18925" style="max-width:96px" />
+      </div>
+      <div class="set-row" style="align-items:center">
+        <div class="set-info">
+          <div class="set-t" id="fsLoginState">未登录</div>
+          <div class="set-d" id="fsSyncInfo"></div>
+        </div>
+        <button class="tb primary" id="fsLogin">登录飞书</button>
+        <button class="tb" id="fsLogout">退出</button>
+      </div>
+      <label class="set-row" style="cursor:pointer">
+        <div class="set-info"><div class="set-t">自动从飞书拉取</div><div class="set-d">应用启动时 + 每 30 分钟自动拉取一次（仅拉取，不推送）。</div></div>
+        <input type="checkbox" id="fsAuto" style="accent-color:var(--moss);width:16px;height:16px" />
+      </label>
+      <div class="bk-actions">
+        <button class="tb" id="fsPull">从飞书同步（拉取）</button>
+        <button class="tb" id="fsPush">推送到飞书</button>
       </div>
     </div>
 
@@ -3410,6 +3470,86 @@ function openSettings() {
     toggleList();
     tl.textContent = state.prefs.listCollapsed ? '展开列表栏' : '收起列表栏';
   };
+
+  // 飞书日历同步
+  const fsState = body.querySelector('#fsLoginState');
+  const fsInfo = body.querySelector('#fsSyncInfo');
+  const fsLoginBtn = body.querySelector('#fsLogin');
+  const fsLogoutBtn = body.querySelector('#fsLogout');
+  const fsAuto = body.querySelector('#fsAuto');
+  const fsAppId = body.querySelector('#fsAppId');
+  const fsAppSecret = body.querySelector('#fsAppSecret');
+  const fsPort = body.querySelector('#fsPort');
+  const fsPull = body.querySelector('#fsPull');
+  const fsPush = body.querySelector('#fsPush');
+
+  const fmtSyncInfo = (cfg) => {
+    const parts = [];
+    if (cfg.lastPullAt) parts.push('上次拉取 ' + relTime(cfg.lastPullAt));
+    if (cfg.lastPushAt) parts.push('上次推送 ' + relTime(cfg.lastPushAt));
+    if (cfg.lastError) parts.push('⚠️ ' + cfg.lastError);
+    return parts.join(' · ');
+  };
+
+  const refreshFs = async () => {
+    const r = await act(API.feishu.getConfig());
+    if (!r) return;
+    const cfg = r.config || {};
+    if (fsAppId) fsAppId.value = cfg.appId || '';
+    if (fsPort) fsPort.value = cfg.redirectPort || 18925;
+    if (fsAuto) fsAuto.checked = !!cfg.autoSync;
+    const loggedIn = !!cfg.loggedIn;
+    if (fsState) fsState.textContent = loggedIn ? '已登录飞书' : '未登录';
+    if (fsInfo) fsInfo.textContent = fmtSyncInfo(cfg);
+    if (fsLoginBtn) fsLoginBtn.style.display = loggedIn ? 'none' : '';
+    if (fsLogoutBtn) fsLogoutBtn.style.display = loggedIn ? '' : 'none';
+    if (fsPull) fsPull.disabled = !loggedIn;
+    if (fsPush) fsPush.disabled = !loggedIn;
+  };
+
+  if (fsAppId) fsAppId.onchange = () => act(API.feishu.saveConfig({ appId: fsAppId.value.trim() }));
+  if (fsAppSecret) fsAppSecret.onchange = () => {
+    const v = fsAppSecret.value.trim();
+    if (!v) return;
+    act(API.feishu.saveConfig({ appSecret: v }));
+    fsAppSecret.value = '';
+  };
+  if (fsPort) fsPort.onchange = () => {
+    const n = parseInt(fsPort.value, 10);
+    act(API.feishu.saveConfig({ redirectPort: Number.isFinite(n) && n > 0 ? n : 18925 }));
+  };
+  if (fsAuto) fsAuto.onchange = () => act(API.feishu.saveConfig({ autoSync: fsAuto.checked }));
+  if (fsLoginBtn) fsLoginBtn.onclick = async () => {
+    fsLoginBtn.disabled = true;
+    await act(API.feishu.login());
+    fsLoginBtn.disabled = false;
+    await refreshFs();
+  };
+  if (fsLogoutBtn) fsLogoutBtn.onclick = async () => {
+    const ok = await confirmDialog({
+      title: '退出飞书登录？',
+      message: '本地保存的飞书令牌会被清除；已经拉进 My Life 的日程会原样保留。',
+      okLabel: '退出',
+    });
+    if (!ok) return;
+    await act(API.feishu.logout());
+    await refreshFs();
+  };
+  const doSync = async (kind) => {
+    const btn = kind === 'pull' ? fsPull : fsPush;
+    if (btn) btn.disabled = true;
+    const r = await act(kind === 'pull' ? API.feishu.pull() : API.feishu.push());
+    if (btn) btn.disabled = false;
+    if (r) {
+      applySnapshot(r);
+      renderAll();
+      await refreshFs();
+    }
+  };
+  if (fsPull) fsPull.onclick = () => doSync('pull');
+  if (fsPush) fsPush.onclick = () => doSync('push');
+
+  await refreshFs();
 
   refreshBackupList();
 }
@@ -3642,7 +3782,45 @@ function bindEvents() {
   };
   $('#calToday').onclick = () => gotoCalendar({ date: todayStr() });
   $('#calNew').onclick = () => startNewSchedule(state.calSelectedDate || todayStr());
+  $('#calSync').onclick = async () => {
+    const r = await act(API.feishu.pull());
+    if (r) {
+      applySnapshot(r);
+      renderAll();
+    }
+  };
   $('#calExport').onclick = exportIcsFlow;
+
+  // 飞书同步结果（自动 / 手动都会触发）
+  API.feishu.onResult((p) => {
+    if (p.snapshot) {
+      applySnapshot(p.snapshot);
+      renderAll();
+    }
+    if (!p.silent) {
+      const isPush = p.kind === 'push';
+      const kind = isPush ? '推送到飞书' : '从飞书同步';
+      const bits = [];
+      if (p.created) bits.push('新增 ' + p.created);
+      if (p.updated) bits.push('更新 ' + p.updated);
+      if (p.removed) bits.push('移除 ' + p.removed);
+      const summary = bits.length ? '（' + bits.join('、') + '）' : '';
+      toast(kind + '完成' + summary, 'ok');
+      // 同步完顺手刷新设置面板里的登录 / 时间信息
+      const fsInfo = document.querySelector('#fsSyncInfo');
+      if (fsInfo) {
+        API.feishu.getConfig().then((r2) => {
+          if (!r2 || !r2.config) return;
+          const cfg = r2.config;
+          const parts = [];
+          if (cfg.lastPullAt) parts.push('上次拉取 ' + relTime(cfg.lastPullAt));
+          if (cfg.lastPushAt) parts.push('上次推送 ' + relTime(cfg.lastPushAt));
+          if (cfg.lastError) parts.push('⚠️ ' + cfg.lastError);
+          fsInfo.textContent = parts.join(' · ');
+        });
+      }
+    }
+  });
   $('#calViewSeg').querySelectorAll('button').forEach((b) => {
     b.onclick = () => {
       state.calView = b.dataset.v;

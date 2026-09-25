@@ -750,6 +750,11 @@ button {
   background: var(--danger-soft);
   color: var(--danger);
 }
+.type-badge.feishu {
+  background: #eaf0ff;
+  color: #2b5cff;
+  border: 1px solid #c9d8ff;
+}
 .card .date {
   margin-left: auto;
   font-family: var(--mono);
@@ -2005,6 +2010,38 @@ pre.preview-md {
   margin-top: 2px;
   word-break: break-all;
   line-height: 1.6;
+}
+
+/* 飞书日历同步面板 */
+.fs-row {
+  display: flex;
+  align-items: center;
+}
+.fs-row .set-info {
+  flex: 0 0 auto;
+  min-width: 84px;
+}
+.fs-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--ink);
+  outline: none;
+}
+.fs-input:focus {
+  border-color: var(--moss);
+  box-shadow: 0 0 0 2px var(--moss-soft);
+}
+#fsLoginState {
+  font-weight: 600;
+}
+#fsLoginState:not(:empty) {
+  color: var(--moss);
 }
 
 .switch {

@@ -225,6 +225,39 @@ class LibraryService {
     return cfg.prefs;
   }
 
+  /** 飞书日历同步配置。appId/appSecret 明文存于本机 config.json（本地个人工具，未上云）；
+   *  令牌（access/refresh token）由 feishu.js 加密后放在 tokens 字段。 */
+  static DEFAULT_FEISHU = {
+    appId: '',
+    appSecret: '',
+    redirectPort: 18925,
+    autoSync: false,
+    /** 已登录并拿到的主日历 id，缓存避免每次拉取都查一次 */
+    primaryCalendarId: '',
+    lastPullAt: null,
+    lastPushAt: null,
+    lastError: null,
+    /** 加密后的令牌串（AES-256-GCM），无则未登录 */
+    tokens: null,
+  };
+
+  getFeishuConfig() {
+    const cfg = this.readConfig();
+    return { ...LibraryService.DEFAULT_FEISHU, ...(cfg.feishu || {}) };
+  }
+
+  setFeishuConfig(patch) {
+    const cfg = this.readConfig();
+    const merged = { ...this.getFeishuConfig(), ...(patch || {}) };
+    // 不要把已加密的 tokens 字段被部分 patch 误清空
+    if (patch && 'tokens' in patch && (patch.tokens === undefined || patch.tokens === null)) {
+      // 显式传 null 表示登出，允许清空；其余情况保留
+    }
+    cfg.feishu = merged;
+    this.writeConfig(cfg);
+    return merged;
+  }
+
   // ---------- 备份 ----------
 
   async createBackup(zipPath, store) {

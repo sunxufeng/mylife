@@ -116,4 +116,18 @@ contextBridge.exposeInMainWorld('api', {
   onReminderFocus: (handler) => {
     ipcRenderer.on('reminder:focus', (_e, payload) => handler(payload));
   },
+
+  // 飞书日历同步
+  feishu: {
+    getConfig: () => invoke('feishu:config'),
+    saveConfig: (patch) => invoke('feishu:save-config', patch),
+    login: () => invoke('feishu:login'),
+    logout: () => invoke('feishu:logout'),
+    pull: () => invoke('feishu:pull'),
+    push: () => invoke('feishu:push'),
+    status: () => invoke('feishu:status'),
+    onResult: (handler) => {
+      ipcRenderer.on('feishu:sync-result', (_e, payload) => handler(payload));
+    },
+  },
 });

@@ -634,6 +634,111 @@ function section(t) {
   ok(oldRaw.schedules.length === 1 && oldRaw.schedules[0].id === oldNew.id, '新日程正常写回老档案文件');
   ok(oldRaw.entries.length === 1, '写回时没有破坏原有资料');
 
+  // ==========================================================================
+  // 飞书日历同步（纯映射 + 配置存储，不触网）
+  // ==========================================================================
+
+  section('30. 飞书日历同步：纯映射函数 + 配置存储');
+
+  // electron 只在主进程里存在；这里给个最小桩，让 feishu.js 能被 require
+  const Module = require('node:module');
+  const _origLoad = Module._load;
+  Module._load = function (req, parent, isMain) {
+    if (req === 'electron') return { shell: { openExternal: async () => {} } };
+    return _origLoad.apply(this, arguments);
+  };
+  const {
+    FeishuClient,
+    encryptJSON,
+    decryptJSON,
+    rruleToMyLifeRepeat,
+  } = require('../src/main/feishu');
+  const { feishuEventToSchedule, scheduleToFeishuEvent, findByEventId } = require('../src/main/sync');
+
+  // 配置存储（不依赖网络）
+  ok(lib.getFeishuConfig().appId === '', '飞书配置默认空');
+  lib.setFeishuConfig({ appId: 'cli_test', autoSync: true });
+  ok(lib.getFeishuConfig().appId === 'cli_test', '可写入并读回 App ID');
+  ok(lib.getFeishuConfig().autoSync === true, '自动同步开关可保存');
+  ok(lib.getFeishuConfig().redirectPort === 18925, '回调端口保留默认值');
+  const fclient = new FeishuClient(lib);
+  ok(fclient.status().configured === false, '只配了 appId 没有 secret，视为未配置完成');
+  lib.setFeishuConfig({ appSecret: 's3cret' });
+  ok(fclient.status().configured === true, 'appId + appSecret 齐了才算 configured');
+  ok(fclient.isLoggedIn() === false, '没有令牌不算已登录');
+
+  // 令牌加密 / 解密 往返
+  const tok = { access_token: 'AT', refresh_token: 'RT', expires_at: Date.now() + 3600e3 };
+  const enc = encryptJSON(tok, 's3cret');
+  ok(typeof enc === 'string' && enc !== JSON.stringify(tok), '令牌被加密成字符串');
+  const dec = decryptJSON(enc, 's3cret');
+  ok(dec && dec.access_token === 'AT' && dec.refresh_token === 'RT', '解密能还原令牌');
+  ok(decryptJSON(enc, 'wrong') === null, '错误密钥解不开（返回 null）');
+
+  // 飞书事件 → My Life 日程
+  const ev = {
+    event_id: 'evt_1',
+    summary: '飞书例会',
+    description: '<p>带 <b>HTML</b> 的备注</p>',
+    start: { time: '2026-10-01T10:00:00+08:00' },
+    end: { time: '2026-10-01T11:30:00+08:00' },
+    event_location: { name: '三楼会议室' },
+    recurrence: ['RRULE:FREQ=WEEKLY;COUNT=4'],
+  };
+  const sch = feishuEventToSchedule(ev, 'cal_primary');
+  ok(sch.source === 'feishu', '映射结果标记为飞书来源');
+  ok(sch.feishu.calendarId === 'cal_primary' && sch.feishu.eventId === 'evt_1', '记录飞书日历与事件 id');
+  ok(sch.title === '飞书例会' && sch.date === '2026-10-01', '标题与日期解析正确');
+  ok(sch.start === '10:00' && sch.end === '11:30', '起止时间解析正确');
+  ok(sch.location === '三楼会议室', '地点解析正确');
+  ok(sch.note === '带 HTML 的备注', 'HTML 备注被脱成纯文本');
+  ok(sch.repeat && sch.repeat.freq === 'weekly' && sch.repeat.count === 4, 'RRULE 周重复 + 次数映射正确');
+
+  // 全天事件
+  const allDayEv = { event_id: 'evt_2', summary: '放假', start: { date: '2026-10-02' }, end: { date: '2026-10-03' } };
+  const allDaySch = feishuEventToSchedule(allDayEv, 'cal_primary');
+  ok(allDaySch.allDay === true && allDaySch.date === '2026-10-02', '全天事件识别为 allDay');
+
+  // 取消的事件
+  const cancelled = feishuEventToSchedule({ event_id: 'evt_3', status: 'cancelled' }, 'cal_primary');
+  ok(cancelled.__cancelled === true && cancelled.eventId === 'evt_3', '已取消的事件标记待清理');
+
+  // My Life 日程 → 飞书事件 body
+  const toFeishu = scheduleToFeishuEvent({
+    title: '本地日程',
+    date: '2026-10-05',
+    start: '09:00',
+    end: '10:00',
+    location: '二楼',
+    note: '备注',
+  });
+  ok(toFeishu.summary === '本地日程', '上传标题正确');
+  ok(toFeishu.start_time.time.includes('2026-10-05T09:00'), '上传定时字段带本地时间');
+  ok(toFeishu.end_time.time.includes('10:00'), '上传结束时间正确');
+  ok(toFeishu.event_location && toFeishu.event_location.name === '二楼', '上传地点正确');
+  const allDayUp = scheduleToFeishuEvent({ title: '全天', date: '2026-10-06', allDay: true });
+  ok(allDayUp.start_time.date === '2026-10-06', '全天上传用 date 字段');
+
+  // RRULE → repeat 直测（含不支持的 INTERVAL 保留兼容字段）
+  const rI = rruleToMyLifeRepeat('RRULE:FREQ=DAILY;INTERVAL=2;UNTIL=20261231T160000Z');
+  ok(rI && rI.freq === 'daily' && rI.interval === 2 && rI.until === '2026-12-31', '每日隔天 + until 映射正确');
+  ok(rruleToMyLifeRepeat('FREQ=HOURLY') === null, '不支持的频率返回 null（退化单实例）');
+
+  // findByEventId
+  const storeForFs = new ArchiveStore(path.join(root, 'fs-lib'));
+  await storeForFs.load();
+  const fsSched = await storeForFs.createSchedule({
+    title: '飞书来的',
+    date: '2026-10-07',
+    source: 'feishu',
+    feishu: { calendarId: 'cal_primary', eventId: 'evt_x', updatedAt: 't' },
+  });
+  const found = findByEventId(storeForFs, 'cal_primary', 'evt_x');
+  ok(found && found.id === fsSched.id, '能按 日历+事件id 找到本机对应日程');
+  ok(findByEventId(storeForFs, 'cal_primary', 'nope') === null, '找不到时返回 null');
+
+  Module._load = _origLoad;
+
   await fsp.rm(root, { recursive: true, force: true });
 
   console.log('\n' + '='.repeat(52));
