@@ -1,6 +1,6 @@
 'use strict';
 /**
- * My Life —— 预加载脚本
+ * My Workbench —— 预加载脚本
  * 只通过 contextBridge 暴露一组明确的、参数受控的能力，渲染进程拿不到 Node。
  */
 

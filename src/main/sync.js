@@ -1,6 +1,6 @@
 'use strict';
 /**
- * My Life —— 飞书 ⇄ 本机 的同步编排
+ * My Workbench —— 飞书 ⇄ 本机 的同步编排
  *
  * 纯映射函数（feishuEventToSchedule / scheduleToFeishuEvent）不触碰网络，
  * 可以被 smoke-test 单测；编排函数（pullFromFeishu / pushToFeishu）由主进程调用，
@@ -9,7 +9,7 @@
 
 const { rruleToMyLifeRepeat, stripHtml } = require('./feishu');
 
-/** 把飞书事件的 start/end 解析成 My Life 用的时间字段 */
+/** 把飞书事件的 start/end 解析成 My Workbench 用的时间字段 */
 function parseFeishuTime(startObj, endObj) {
   const out = { allDay: false, date: '', endDate: null, start: '', end: '' };
   if (startObj && startObj.date) {
@@ -36,7 +36,7 @@ function parseFeishuTime(startObj, endObj) {
 }
 
 /**
- * 飞书事件 → My Life 日程（不含 source/feishu 之外的业务键，交给 store 归一化）。
+ * 飞书事件 → My Workbench 日程（不含 source/feishu 之外的业务键，交给 store 归一化）。
  * 返回 null 表示这是已取消的事件（调用方据此删除本地副本）。
  */
 function feishuEventToSchedule(ev, calendarId) {
@@ -107,7 +107,7 @@ function findByEventId(store, calendarId, eventId) {
 }
 
 /**
- * 飞书 → My Life（增量 upsert + 删除）。
+ * 飞书 → My Workbench（增量 upsert + 删除）。
  * 拉取主日历在 [now-30d, now+365d] 区间内的事件；以 eventId 去重更新；
  * 上次同步进来、这次不再出现的飞书事件（或已 cancelled）从本机移除（进回收站）。
  */
@@ -177,7 +177,7 @@ async function pullFromFeishu(store, feishu, { windowDays = 365, backDays = 30 }
 }
 
 /**
- * My Life → 飞书（手动，按需）。只推送本机里「同步到飞书」(feishu.push=true) 的日程：
+ * My Workbench → 飞书（手动，按需）。只推送本机里「同步到飞书」(feishu.push=true) 的日程：
  * 没有 eventId 的就创建；有 eventId 的就更新。返回汇总。
  */
 async function pushToFeishu(store, feishu) {

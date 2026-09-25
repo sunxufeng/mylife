@@ -364,7 +364,7 @@ module.exports = async function ({ win, app, shot, errors }) {
 
   const backupDir = path.join(LIB_DIR, 'backups');
   const zips = fs.readdirSync(backupDir).filter((f) => f.endsWith('.zip'));
-  assert(zips.length >= 1 && zips[0].startsWith('My Life 备份_'), '备份 zip 落在资料库 backups/ 且命名带 My Life：' + zips.join(', '));
+  assert(zips.length >= 1 && zips[0].startsWith('My Workbench 备份_'), '备份 zip 落在资料库 backups/ 且命名带 My Workbench：' + zips.join(', '));
   const zipSize = fs.statSync(path.join(backupDir, zips[0])).size;
   assert(zipSize > 1000, '备份文件有实际内容（' + Math.round(zipSize / 1024) + ' KB）');
 

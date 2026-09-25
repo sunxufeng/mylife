@@ -17,28 +17,28 @@
         width: 1024px;
         height: 1024px;
       }
-      /* 圆角方形主体：苔绿渐变 */
+      /* 圆角方形主体：暖色琥珀-珊瑚渐变 */
       .plate {
         position: absolute;
         inset: 72px;
         border-radius: 232px;
-        background: linear-gradient(158deg, #8da27b 0%, #6e8163 44%, #3f5238 100%);
-        box-shadow: inset 0 6px 26px rgba(255, 255, 255, 0.24),
-          inset 0 -18px 46px rgba(22, 34, 20, 0.36);
+        background: linear-gradient(158deg, #f5b95c 0%, #e87245 44%, #b84e36 100%);
+        box-shadow: inset 0 6px 26px rgba(255, 255, 255, 0.28),
+          inset 0 -18px 46px rgba(60, 20, 10, 0.35);
         overflow: hidden;
       }
-      /* 斜向高光，呼应设置面板里的主题色卡 */
+      /* 斜向高光 */
       .sheen {
         position: absolute;
         inset: 0;
         background: linear-gradient(
           135deg,
-          rgba(255, 253, 247, 0.15) 0%,
-          rgba(255, 253, 247, 0.15) 38%,
-          rgba(255, 253, 247, 0) 38.4%
+          rgba(255, 252, 242, 0.18) 0%,
+          rgba(255, 252, 242, 0.18) 38%,
+          rgba(255, 252, 242, 0) 38.4%
         );
       }
-      /* 底部细密横纹，像档案盒的抽绳 */
+      /* 底部细密横纹，呼应工作台台面纹理 */
       .lines {
         position: absolute;
         left: 0;
@@ -47,10 +47,10 @@
         height: 26%;
         background: repeating-linear-gradient(
           to bottom,
-          rgba(255, 253, 247, 0) 0px,
-          rgba(255, 253, 247, 0) 22px,
-          rgba(255, 253, 247, 0.085) 22px,
-          rgba(255, 253, 247, 0.085) 24px
+          rgba(255, 252, 242, 0) 0px,
+          rgba(255, 252, 242, 0) 22px,
+          rgba(255, 252, 242, 0.095) 22px,
+          rgba(255, 252, 242, 0.095) 24px
         );
       }
       .glyph {
@@ -59,12 +59,12 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        font-family: 'Songti SC', 'STSong', 'Source Han Serif SC', serif;
+        font-family: 'Times New Roman', 'Songti SC', 'STSong', serif;
         font-weight: 600;
         font-size: 492px;
         line-height: 1;
-        color: #fdfbf5;
-        text-shadow: 0 6px 24px rgba(24, 36, 22, 0.4);
+        color: #fffbf5;
+        text-shadow: 0 6px 24px rgba(60, 20, 10, 0.35);
         padding-bottom: 74px;
       }
       .rule {
@@ -77,11 +77,11 @@
         border-radius: 4px;
         background: linear-gradient(
           90deg,
-          rgba(216, 186, 128, 0) 0%,
-          #d8ba80 24%,
-          #f2e0b6 50%,
-          #d8ba80 76%,
-          rgba(216, 186, 128, 0) 100%
+          rgba(248, 214, 148, 0) 0%,
+          #f8d694 24%,
+          #fff2cf 50%,
+          #f8d694 76%,
+          rgba(248, 214, 148, 0) 100%
         );
       }
     </style>
@@ -91,7 +91,7 @@
       <div class="plate">
         <div class="sheen"></div>
         <div class="lines"></div>
-        <div class="glyph">M</div>
+        <div class="glyph">W</div>
         <div class="rule"></div>
       </div>
     </div>

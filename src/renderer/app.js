@@ -1,6 +1,6 @@
 'use strict';
 /* ==========================================================================
-   My Life —— 渲染进程
+   My Workbench —— 渲染进程
    ========================================================================== */
 
 // 注意：顶层不能声明名为 api 的绑定，会与预加载暴露的 window.api 冲突导致整份脚本解析失败
@@ -2359,7 +2359,7 @@ function renderOverview() {
   scroll.innerHTML = '';
   const inner = el('div', 'detail-inner');
 
-  const h = el('div', 'd-title', 'My Life');
+  const h = el('div', 'd-title', 'My Workbench');
   h.style.marginBottom = '6px';
   inner.appendChild(h);
   const sub = el('div');
@@ -3348,7 +3348,7 @@ async function openSettings() {
     <div class="set-section" id="fsSection">
       <h4>飞书日历同步</h4>
       <div class="set-note">
-        把飞书<strong>主日历</strong>的日程拉进 My Life（自动或手动），也可以把本机手动创建的日程推回飞书。
+        把飞书<strong>主日历</strong>的日程拉进 My Workbench（自动或手动），也可以把本机手动创建的日程推回飞书。
         需要先在飞书开放平台给这个应用开通日历权限（读取 / 读取日程 / 更新日程），并在「重定向 URL」里加上
         <code>http://127.0.0.1:18925/callback</code>。
       </div>
@@ -3389,7 +3389,7 @@ async function openSettings() {
       <h4>关于</h4>
       <div class="kv-list">
         <div class="row"><span class="k">应用</span><span class="v">${esc(
-          (state.appInfo && state.appInfo.name) || 'My Life'
+          (state.appInfo && state.appInfo.name) || 'My Workbench'
         )} ${esc(state.appInfo ? state.appInfo.version : '')}</span></div>
         <div class="row"><span class="k">运行环境</span><span class="v">${
           state.appInfo ? `${state.appInfo.platform} / ${state.appInfo.arch} · Electron ${state.appInfo.electron} · Node ${state.appInfo.node}` : ''
@@ -3528,7 +3528,7 @@ async function openSettings() {
   if (fsLogoutBtn) fsLogoutBtn.onclick = async () => {
     const ok = await confirmDialog({
       title: '退出飞书登录？',
-      message: '本地保存的飞书令牌会被清除；已经拉进 My Life 的日程会原样保留。',
+      message: '本地保存的飞书令牌会被清除；已经拉进 My Workbench 的日程会原样保留。',
       okLabel: '退出',
     });
     if (!ok) return;
@@ -3595,7 +3595,7 @@ async function doRestore(zipPath) {
   const body = el('div');
   body.innerHTML = `
     <p style="font-size:12.5px;color:var(--ink-2);margin-bottom:12px;line-height:1.8">
-      这是一个<strong>My Life</strong>备份包，可以恢复。
+      这是一个<strong>My Workbench</strong>备份包，可以恢复。
     </p>
     <div class="kv-list">
       <div class="row"><span class="k">文件</span><span class="v">${esc(info.path.split('/').pop())}</span></div>
@@ -4001,7 +4001,7 @@ async function boot() {
   renderReminders();
 
   if (state.migratedFrom) {
-    toast('资料库已随改名迁到「My Life 资料库」', 'ok');
+    toast('资料库已随改名迁到「My Workbench 资料库」', 'ok');
   }
 }
 

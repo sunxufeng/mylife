@@ -1,12 +1,12 @@
 'use strict';
 /**
- * My Life —— 飞书日历客户端（主进程）
+ * My Workbench —— 飞书日历客户端（主进程）
  *
  * 负责：
  *  · 加密保存 access/refresh token（AES-256-GCM，密钥由本机信息 + appSecret 派生）
  *  · OAuth 2.0 授权码流程（127.0.0.1 本地回调，浏览器登录后拿 code）
  *  · 飞书 Calendar v4 API：主日历 / 事件列表 / 创建 / 更新 / 删除
- *  · RRULE → My Life 重复规则 的轻量转换
+ *  · RRULE → My Workbench 重复规则 的轻量转换
  *
  * 不依赖任何第三方包，全部用 Node 内置模块 + Electron 的 shell。
  */
@@ -163,7 +163,7 @@ class FeishuClient {
           if (code && retState === state) {
             res.end(
               '<html><body style="font-family:-apple-system,sans-serif;padding:48px;text-align:center">' +
-                '<h2>✅ 飞书登录成功</h2><p>可以关闭这个页面，回到 My Life 继续了。</p></body></html>'
+                '<h2>✅ 飞书登录成功</h2><p>可以关闭这个页面，回到 My Workbench 继续了。</p></body></html>'
             );
             finish(null, code);
           } else {
@@ -285,7 +285,7 @@ class FeishuClient {
 /* ------------------------------------------------------ RRULE 转换 */
 
 /**
- * 把飞书事件的 recurrence（RRULE 字符串）尽量转成 My Life 的 repeat。
+ * 把飞书事件的 recurrence（RRULE 字符串）尽量转成 My Workbench 的 repeat。
  * 只支持最常见的 DAILY / WEEKLY / MONTHLY / YEARLY + INTERVAL + COUNT + UNTIL。
  * 不支持的（带 BYDAY 复杂组合、EXDATE 等）返回 null，由调用方退化为单实例。
  */
@@ -307,7 +307,7 @@ function rruleToMyLifeRepeat(rrule) {
     else if (k === 'UNTIL') until = rruleUntilToDate(v);
   }
   if (!freq) return null;
-  // My Life 的 repeat 不区分 INTERVAL 之外的复杂规则；INTERVAL>1 时仍用同一 freq
+  // My Workbench 的 repeat 不区分 INTERVAL 之外的复杂规则；INTERVAL>1 时仍用同一 freq
   const out = { freq };
   if (interval > 1) out.interval = interval; // 注：normalizeRepeat 未显式支持 interval，这里保留兼容字段
   if (count != null) out.count = count;

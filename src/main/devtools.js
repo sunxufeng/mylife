@@ -2,7 +2,7 @@
 /**
  * 开发 / 自测辅助：仅在设置了环境变量时才生效，正式使用时不加载任何东西。
  *
- *   LA_LIBRARY_PATH  指定资料库目录（避免日常测试写进真实的「文稿/My Life」）
+ *   LA_LIBRARY_PATH  指定资料库目录（避免日常测试写进真实的「文稿/My Workbench」）
  *   LA_SHOT_DIR      把界面截图写到这个目录
  *   LA_TEST_SCRIPT   指向一个模块，导出 async ({ win, app, shot }) => {} 由它驱动界面
  *   LA_TEST_EXIT=0   测试结束后不自动退出（默认退出）

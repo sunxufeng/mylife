@@ -1,6 +1,6 @@
 'use strict';
 /* ==========================================================================
-   My Life —— 日期 / 重复规则 / 冲突检测（纯函数）
+   My Workbench —— 日期 / 重复规则 / 冲突检测（纯函数）
    同一份文件被两边复用：
      · 渲染进程：index.html 里当普通 <script> 加载
      · 主进程 / Node 自测：require('../renderer/schedule.js')
@@ -486,10 +486,10 @@ function buildIcs(schedules, opts = {}) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//My Life//Schedule//CN',
+    'PRODID:-//My Workbench//Schedule//CN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
-    'X-WR-CALNAME:My Life 日程',
+    'X-WR-CALNAME:My Workbench 日程',
   ];
 
   for (const o of occs) {
@@ -497,7 +497,7 @@ function buildIcs(schedules, opts = {}) {
     seen.add(o.key);
     const s = o.schedule;
     lines.push('BEGIN:VEVENT');
-    lines.push(`UID:${icsEscape(`${s.id}-${o.startDate}@my-life`)}`);
+    lines.push(`UID:${icsEscape(`${s.id}-${o.startDate}@my-workbench`)}`);
     lines.push(`DTSTAMP:${stamp}`);
     lines.push(`SUMMARY:${icsEscape(s.title || '未命名日程')}`);
 

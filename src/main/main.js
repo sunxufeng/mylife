@@ -1,6 +1,6 @@
 'use strict';
 /**
- * My Life —— Electron 主进程
+ * My Workbench —— Electron 主进程
  * 负责：窗口、数据读写、附件复制、导出、备份恢复、自定义 archive:// 协议
  */
 
@@ -44,7 +44,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-app.setName('My Life');
+app.setName('My Workbench');
 
 /** @type {BrowserWindow|null} */
 let win = null;
@@ -59,6 +59,31 @@ let migratedFrom = null;
 
 function configPath() {
   return path.join(app.getPath('userData'), 'config.json');
+}
+
+/**
+ * 改名迁移：把旧配置目录 ~/Library/Application Support/My Life 迁到 My Workbench。
+ * 必须在 app.setName 之后、首次读取 config 之前调用，保证偏好与飞书凭证不丢。
+ */
+function migrateConfigDir() {
+  const oldDir = path.join(app.getPath('home'), 'Library', 'Application Support', 'My Life');
+  const newDir = app.getPath('userData');
+  if (oldDir === newDir) return;
+  try {
+    if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) {
+      fs.mkdirSync(path.dirname(newDir), { recursive: true });
+      fs.renameSync(oldDir, newDir);
+    } else if (fs.existsSync(oldDir) && fs.existsSync(newDir)) {
+      // 新目录可能已被 Electron 自动建为空目录，仅把旧 config.json 合并过来
+      const oldCfg = path.join(oldDir, 'config.json');
+      const newCfg = path.join(newDir, 'config.json');
+      if (fs.existsSync(oldCfg) && !fs.existsSync(newCfg)) {
+        fs.copyFileSync(oldCfg, newCfg);
+      }
+    }
+  } catch (e) {
+    console.error('配置目录迁移失败（可忽略，下次启动会重试）：', e && e.message);
+  }
 }
 
 async function initStore() {
@@ -100,7 +125,7 @@ function createWindow() {
     minWidth: 1040,
     minHeight: 640,
     backgroundColor: '#F6F2EA',
-    title: 'My Life',
+    title: 'My Workbench',
     show: false,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 18 },
@@ -142,17 +167,17 @@ function buildMenu() {
     ...(isMac
       ? [
           {
-            label: 'My Life',
+            label: 'My Workbench',
             submenu: [
-              { role: 'about', label: '关于 My Life' },
+              { role: 'about', label: '关于 My Workbench' },
               { type: 'separator' },
               { label: '设置…', accelerator: 'CmdOrCtrl+,', click: send('menu:settings') },
               { type: 'separator' },
-              { role: 'hide', label: '隐藏 My Life' },
+              { role: 'hide', label: '隐藏 My Workbench' },
               { role: 'hideOthers', label: '隐藏其他' },
               { role: 'unhide', label: '全部显示' },
               { type: 'separator' },
-              { role: 'quit', label: '退出 My Life' },
+              { role: 'quit', label: '退出 My Workbench' },
             ],
           },
         ]
@@ -383,7 +408,7 @@ function registerIpc() {
     const tag = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const res = await dialog.showSaveDialog(win, {
       title: `导出日程（${label}）`,
-      defaultPath: path.join(app.getPath('documents'), `My Life 日程_${tag}.ics`),
+      defaultPath: path.join(app.getPath('documents'), `My Workbench 日程_${tag}.ics`),
       filters: [{ name: 'iCalendar', extensions: ['ics'] }],
       buttonLabel: '导出',
     });
@@ -527,7 +552,7 @@ function registerIpc() {
     if (mode === 'combined') {
       const res = await dialog.showSaveDialog(win, {
         title: '导出为 Markdown',
-        defaultPath: path.join(app.getPath('documents'), `My Life 导出_${tag}.md`),
+        defaultPath: path.join(app.getPath('documents'), `My Workbench 导出_${tag}.md`),
         filters: [{ name: 'Markdown', extensions: ['md'] }],
         buttonLabel: '导出',
       });
@@ -547,7 +572,7 @@ function registerIpc() {
       buttonLabel: '导出到这里',
     });
     if (res.canceled || !res.filePaths.length) return { canceled: true };
-    const dir = path.join(res.filePaths[0], `My Life 导出_${tag}`);
+    const dir = path.join(res.filePaths[0], `My Workbench 导出_${tag}`);
     const out = await lib.exportPerEntry(entries, dir, store, {
       copyAttachments,
       includeSchedules,
@@ -572,7 +597,7 @@ function registerIpc() {
   const backupFileName = () => {
     const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
-    return `My Life 备份_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.zip`;
+    return `My Workbench 备份_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.zip`;
   };
 
   /** 一键备份：直接写进资料库的 backups/ 目录，不弹框 */
@@ -819,6 +844,7 @@ function startFeishuAutoSync() {
 // ---------------------------------------------------------------------------
 
 app.whenReady().then(async () => {
+  migrateConfigDir();
   lib = new LibraryService(configPath());
   try {
     await initStore();

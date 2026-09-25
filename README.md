@@ -1,4 +1,4 @@
-# My Life
+# My Workbench
 
 一个**完全离线**的桌面资料库：把经历、工作资料、阅读笔记和灵感收进同一个地方，随时搜得到，
 还能一键导出成 Markdown 交给 AI 阅读；另外配一条时间轴（日历与日程），
@@ -15,7 +15,7 @@
 ```bash
 npm install
 npm start          # 开发模式运行
-npm run pack       # 打包出 dist/My Life-darwin-arm64/My Life.app
+npm run pack       # 打包出 dist/My Workbench-darwin-arm64/My Workbench.app
 npm run icon       # 重新生成应用图标
 ```
 
@@ -43,10 +43,10 @@ npm run icon       # 重新生成应用图标
 
 ## 数据放在哪
 
-默认 `~/Documents/My Life 资料库/`：
+默认 `~/Documents/My Workbench 资料库/`：
 
 ```
-My Life 资料库/
+My Workbench 资料库/
 ├── archive.json          全部文字资料 + 全部日程
 ├── archive.json.bak      上一次写入前的自动备份
 ├── attachments/<资料id>/ 附件副本
@@ -54,7 +54,7 @@ My Life 资料库/
 ```
 
 配置与偏好（资料库路径、主题、各栏收起状态、日历视图、系统通知开关）在
-`~/Library/Application Support/My Life/config.json`。
+`~/Library/Application Support/My Workbench/config.json`。
 资料库目录**独立于应用安装位置**，重装或移动 app 都不影响数据。
 
 `archive.json` 的 `version`：1 只有资料，**2 起带日程**；老文件没有 `schedules` 字段也能直接读。

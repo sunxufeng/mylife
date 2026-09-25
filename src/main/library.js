@@ -1,6 +1,6 @@
 'use strict';
 /**
- * My Life —— 资料库配置、备份 / 恢复 / Markdown 导出
+ * My Workbench —— 资料库配置、备份 / 恢复 / Markdown 导出
  */
 
 const fs = require('node:fs');
@@ -28,14 +28,17 @@ function humanSize(bytes) {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-/** 默认资料库位置：~/Documents/My Life 资料库 */
+/** 默认资料库位置：~/Documents/My Workbench 资料库 */
 function defaultLibraryPath() {
-  return path.join(os.homedir(), 'Documents', 'My Life 资料库');
+  return path.join(os.homedir(), 'Documents', 'My Workbench 资料库');
 }
 
-/** 旧版（叫「人生档案馆」那会儿）的默认目录，改名后自动迁移 */
+/** 旧版默认目录，改名后自动迁移（优先级：最近的 My Workbench 前身 → 最早的人生档案馆） */
 function legacyLibraryPaths() {
-  return [path.join(os.homedir(), 'Documents', '人生档案馆')];
+  return [
+    path.join(os.homedir(), 'Documents', 'My Life 资料库'),
+    path.join(os.homedir(), 'Documents', '人生档案馆'),
+  ];
 }
 
 /** 递归列出目录下所有文件（相对路径，posix 分隔符），跳过 exclude 目录名 */
@@ -77,7 +80,7 @@ function scheduleMarkdownLine(s) {
 /** 用 Markdown 组装若干条资料 */
 function buildMarkdown(
   entries,
-  { title = 'My Life 导出', includeAttachmentList = true, schedules = [], includeSchedules = false } = {}
+  { title = 'My Workbench 导出', includeAttachmentList = true, schedules = [], includeSchedules = false } = {}
 ) {
   const now = new Date();
   const p = (n) => String(n).padStart(2, '0');
@@ -161,7 +164,7 @@ class LibraryService {
 
   /**
    * 决定这次用哪个资料库目录。
-   * 默认位置是 ~/Documents/My Life 资料库；如果它还不存在、而旧版「人生档案馆」目录里有数据，
+   * 默认位置是 ~/Documents/My Workbench 资料库；如果它还不存在、而旧版「人生档案馆」目录里有数据，
    * 就把旧目录整个改名搬过来（rename 是原子操作，数据不会丢）。
    */
   async resolveLibraryPath() {
@@ -268,7 +271,7 @@ class LibraryService {
       'BACKUP-INFO.json',
       JSON.stringify(
         {
-          app: 'My Life',
+          app: 'My Workbench',
           version: 2,
           exportedAt: new Date().toISOString(),
           libraryPath: store.libraryPath,

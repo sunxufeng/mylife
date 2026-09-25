@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==========================================================================
-# My Life —— 打包成 macOS .app
+# My Workbench —— 打包成 macOS .app
 #
 # 为什么不用 electron-packager：
 #   本机的文件写入有宿主中介（brokered file token）拦着，electron-packager 解压
@@ -16,8 +16,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-APP_NAME="My Life"
-BUNDLE_ID="com.arete.mylife"
+APP_NAME="My Workbench"
+BUNDLE_ID="com.arete.myworkbench"
 VERSION="$(node -p "require('$ROOT/package.json').version")"
 OUT="dist/${APP_NAME}-darwin-arm64"
 APP="$OUT/${APP_NAME}.app"
@@ -33,7 +33,7 @@ mkdir -p "$OUT"
 rm -rf "$APP"
 ditto "$TEMPLATE" "$APP"
 
-# 2. 主程序改名为「My Life」
+# 2. 主程序改名为「My Workbench」
 mv "$APP/Contents/MacOS/Electron" "$APP/Contents/MacOS/$APP_NAME"
 
 # 3. 主 Info.plist

@@ -294,10 +294,10 @@ function section(t) {
   const legacyStore = new ArchiveStore(legacyDir);
   await legacyStore.load();
   const upgraded = legacyStore.get('eold');
-  ok(upgraded.title === '欢迎使用 My Life', '旧版说明条目的标题跟着更新', upgraded.title);
+  ok(upgraded.title === '欢迎使用 My Workbench', '旧版说明条目的标题跟着更新', upgraded.title);
   ok(upgraded.format === 'markdown', '并带上了 Markdown 格式');
-  ok(upgraded.content.includes('My Life 资料库'), '正文换成了新版说明');
-  ok(upgraded.source === 'My Life', '来源字段也更新了');
+  ok(upgraded.content.includes('My Workbench 资料库'), '正文换成了新版说明');
+  ok(upgraded.source === 'My Workbench', '来源字段也更新了');
   ok(legacyStore.get('emy').title === '我自己改过标题的说明', '自己改过标题的条目不被动');
   ok(legacyStore.get('ekeep').source === '人生档案馆', '普通资料的来源字段保持原样');
   ok(legacyStore.data.entries.length === 3, '升级过程没有多插入条目', '实际 ' + legacyStore.data.entries.length);
@@ -519,7 +519,7 @@ function section(t) {
   ok(/DTEND;VALUE=DATE:\d{8}/.test(icsText), '全天日程的结束日期是次日（iCalendar 的排他约定）');
   ok(/DTSTART:\d{8}T\d{6}/.test(icsText), '定时日程用本地时间形式');
   ok(icsText.includes('TRIGGER:-PT15M'), '提醒设置随事件带进 VALARM');
-  ok(icsText.includes(`UID:${icsRemind.id}-2026-11-20@my-life`), '每个事件的 UID 稳定可追溯');
+  ok(icsText.includes(`UID:${icsRemind.id}-2026-11-20@my-workbench`), '每个事件的 UID 稳定可追溯');
   ok(icsText.includes('SUMMARY:'), '每个事件都有标题');
   ok(icsOut.events > 0 && icsOut.events >= icsOut.schedules, '展开出的 VEVENT 数量合理', JSON.stringify(icsOut));
   let icsThrew = false;
@@ -675,7 +675,7 @@ function section(t) {
   ok(dec && dec.access_token === 'AT' && dec.refresh_token === 'RT', '解密能还原令牌');
   ok(decryptJSON(enc, 'wrong') === null, '错误密钥解不开（返回 null）');
 
-  // 飞书事件 → My Life 日程
+  // 飞书事件 → My Workbench 日程
   const ev = {
     event_id: 'evt_1',
     summary: '飞书例会',
@@ -703,7 +703,7 @@ function section(t) {
   const cancelled = feishuEventToSchedule({ event_id: 'evt_3', status: 'cancelled' }, 'cal_primary');
   ok(cancelled.__cancelled === true && cancelled.eventId === 'evt_3', '已取消的事件标记待清理');
 
-  // My Life 日程 → 飞书事件 body
+  // My Workbench 日程 → 飞书事件 body
   const toFeishu = scheduleToFeishuEvent({
     title: '本地日程',
     date: '2026-10-05',

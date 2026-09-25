@@ -1,6 +1,6 @@
 'use strict';
 /**
- * My Life —— 数据层
+ * My Workbench —— 数据层
  * 全部数据存放在「资料库目录」下的单个 JSON 文件 archive.json 中，
  * 资料库目录独立于安装目录，重装/移动应用不影响数据。
  */
@@ -254,7 +254,7 @@ class ArchiveStore {
   welcomePayload() {
     return {
       type: 'text',
-      title: '欢迎使用 My Life',
+      title: '欢迎使用 My Workbench',
       format: 'markdown',
       content: [
         '这里是你的私人资料库，所有内容都保存在本机，**完全离线**，不联网、不需要账号。',
@@ -284,7 +284,7 @@ class ArchiveStore {
         '',
         '## 数据存在哪',
         '',
-        '默认在「文稿 / My Life 资料库」：',
+        '默认在「文稿 / My Workbench 资料库」：',
         '',
         '- archive.json —— 全部文字资料',
         '- attachments/ —— 附件的副本',
@@ -297,7 +297,7 @@ class ArchiveStore {
         '这一条只是使用说明，不需要了可以直接删掉。',
       ].join('\n'),
       url: '',
-      source: 'My Life',
+      source: 'My Workbench',
       date: today(),
       category: '',
       tags: ['使用说明'],
